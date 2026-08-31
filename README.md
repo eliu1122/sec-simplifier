@@ -76,4 +76,4 @@ Use `Ctrl+C` in PowerShell to stop the server.
 ## Next step
 
 Use this as the default MVP for interview demos and then expand only if needed
-into multi-company compare or filing-diff workflows later.
+into multi-company compare or filing-diff workflows later. Refer to previous iterations
