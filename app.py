@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,6 +15,10 @@ from src.grounded_qa import answer_question
 HOST, PORT = "127.0.0.1", 8000
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
+# Candidates pulled from the vector store before fusion. Wider than the number
+# of citations shown, so rank fusion has something to work with.
+VECTOR_CANDIDATES = 10
+
 
 def demo_corpus() -> list[dict[str, str]]:
     return [
@@ -22,12 +27,44 @@ def demo_corpus() -> list[dict[str, str]]:
     ]
 
 
-def active_corpus() -> tuple[list[dict], str]:
+@lru_cache(maxsize=1)
+def active_corpus() -> tuple[tuple[dict, ...], str, bool]:
+    """Load the answerable corpus once, preferring the persisted vector store.
+
+    Parsing every filing's HTML takes seconds, so this is cached for the life of
+    the process. Restart the server after re-ingesting or rebuilding the index.
+    """
+    try:
+        from src.vector_store import load_all_chunks
+
+        indexed = load_all_chunks()
+    except ImportError:
+        indexed = []
+
+    if indexed:
+        tickers = ", ".join(sorted({chunk["ticker"] for chunk in indexed}))
+        label = f"Hybrid search over {tickers} ({len(indexed)} indexed chunks)"
+        return tuple(indexed), label, True
+
     corpus = load_local_corpus(DATA_DIR)
     if corpus:
         tickers = ", ".join(sorted({chunk["ticker"] for chunk in corpus}))
-        return corpus, f"EDGAR filings loaded for {tickers} ({len(corpus)} sections)"
-    return demo_corpus(), "Demo corpus: NVCT 2024 10-K"
+        label = f"Keyword search over {tickers} ({len(corpus)} sections) - run src.build_index for hybrid"
+        return tuple(corpus), label, False
+
+    return tuple(demo_corpus()), "Demo corpus: NVCT 2024 10-K", False
+
+
+def search_vector_store(question: str, enabled: bool) -> list[dict]:
+    """Similarity hits for the question, or nothing if the store is unavailable."""
+    if not enabled:
+        return []
+    try:
+        from src.vector_store import query_vector_store
+
+        return query_vector_store(question, limit=VECTOR_CANDIDATES)
+    except ImportError:
+        return []
 
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SEC Simplifier</title><style>
@@ -45,7 +82,7 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(HTTPStatus.OK, PAGE.encode(), "text/html; charset=utf-8")
         elif path == "/api/status":
-            _, label = active_corpus()
+            _, label, _ = active_corpus()
             self._json(HTTPStatus.OK, {"label": label})
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -59,8 +96,11 @@ class AppHandler(BaseHTTPRequestHandler):
             question = str(json.loads(body.decode())["question"]).strip()
             if not question:
                 raise ValueError("Enter a question before submitting.")
-            corpus, _ = active_corpus()
-            self._json(HTTPStatus.OK, answer_question(question, corpus))
+            corpus, _, vector_ready = active_corpus()
+            vector_hits = search_vector_store(question, vector_ready)
+            self._json(
+                HTTPStatus.OK, answer_question(question, list(corpus), vector_hits)
+            )
         except (KeyError, ValueError, json.JSONDecodeError) as error:
             self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
 

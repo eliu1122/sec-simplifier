@@ -34,6 +34,11 @@ def parse_args() -> object:
         help="Directory for the Chroma store (default: data/chroma).",
     )
     parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Drop the collection first. Use after changing how filings are chunked.",
+    )
+    parser.add_argument(
         "--probe",
         metavar="QUESTION",
         help="After indexing, run one similarity query and print the top hits.",
@@ -50,8 +55,9 @@ def main() -> None:
             "No local filings found. Run `python -m src.ingest_filings` first."
         )
 
-    print(f"Loaded {len(chunks)} chunks from local filings.")
-    total = build_vector_store(chunks, persist_dir=args.persist_dir)
+    tables = sum(1 for chunk in chunks if chunk.get("chunk_type") == "table")
+    print(f"Loaded {len(chunks)} chunks from local filings ({tables} tables, {len(chunks) - tables} prose).")
+    total = build_vector_store(chunks, persist_dir=args.persist_dir, reset=args.reset)
     stats = store_stats(persist_dir=args.persist_dir)
     print(f"Vector store now holds {total} chunks across {stats['filings']} filings.")
     print(f"  Tickers: {', '.join(stats['tickers']) or '-'}")

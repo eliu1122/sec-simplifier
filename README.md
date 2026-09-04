@@ -27,11 +27,13 @@ The repo now has a minimal working MVP around the grounded Q&A loop:
 
 - [src/ingest_filings.py](src/ingest_filings.py): fetches filings for the chosen ticker
 - [src/sec_client.py](src/sec_client.py): SEC API client and filing metadata (accession number, period of report)
-- [src/grounded_qa.py](src/grounded_qa.py): section-aware chunking, stable chunk IDs, and grounded answer logic
+- [src/grounded_qa.py](src/grounded_qa.py): chunking, stable chunk IDs, hybrid retrieval, and grounded answer logic
+- [src/tables.py](src/tables.py): separates financial tables from layout tables and renders them as readable chunks
 - [src/corpus.py](src/corpus.py): turns downloaded filings into chunks with full metadata
 - [src/vector_store.py](src/vector_store.py): persists chunks and metadata in a local Chroma store
 - [src/build_index.py](src/build_index.py): CLI that builds or refreshes the vector index
-- [tests/test_grounded_qa.py](tests/test_grounded_qa.py): retrieval, grounding, and vector-store contract tests
+- [tests/test_grounded_qa.py](tests/test_grounded_qa.py): chunking, retrieval, grounding, and vector-store contract tests
+- [tests/golden_set.json](tests/golden_set.json): reviewed evaluation cases, with known gaps recorded explicitly
 
 ## Six-week build roadmap
 
@@ -43,53 +45,40 @@ account of what is built, what is pending, and the known weaknesses.
 | 1 | SEC EDGAR filings | Download a defined company scope: 10-K, 10-Q, 8-K, and DEF 14A filings, with source URLs and filing metadata. | Complete - NVCT filings download locally. |
 | 2 | Ingestion and chunking | Parse downloaded filing HTML into section-aware chunks that retain ticker, form, filing date, document name, and SEC source URL. | Core complete - section-aware chunks are loaded into the app. |
 | 3 | Vector store and metadata | Persist chunks and metadata in Chroma, with a stable chunk ID, filing accession number, section, period, and source URL. | Complete - `src/build_index.py` writes a persistent Chroma store; every chunk carries a stable ID and full filing metadata. |
-| 4 | Hybrid retrieval | Combine lexical/keyword search with vector similarity search, then rerank the strongest evidence chunks. | Next - lexical scorer and vector search both exist; still need to merge and rerank them behind the grounded-answer contract. |
-| 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Planned. |
-| 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Baseline started - UI evidence cards and regression tests exist. |
+| 4 | Hybrid retrieval | Combine lexical/keyword search with vector similarity search, then rerank the strongest evidence chunks. | Complete - table-aware chunking, BM25 + vector search fused with reciprocal rank fusion, two-gate abstention. Live in the app. |
+| 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Next. |
+| 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Baseline started - UI evidence cards, and a 13-case golden set scoring 11/13. |
 
 ### Current position
 
-The project is at the end of **Week 3** and ready for **Week 4**. Downloaded
-filings are now persisted as embedded chunks in a local Chroma store, each with a
-stable chunk ID and full filing metadata. The app's live answer path still uses
-the Week 2 lexical scorer; Week 4 merges the two into hybrid retrieval.
+The project is at the end of **Week 4** and ready for **Week 5**. The app now
+answers through hybrid retrieval over the persisted Chroma index: financial
+tables are chunked as tables, lexical and vector search are fused, and abstention
+is guarded by two independent gates. What is still missing is a model that
+*reads* the retrieved evidence — answers are excerpted, not written, and the two
+open evaluation gaps both need a reader rather than a better retriever.
 
-### Done in Week 3
+### Still open (carried into Week 5-6)
 
-- Stable chunk IDs. Each chunk's ID is `accession:section-slug:position`, so
-  re-running ingestion upserts the same rows instead of creating duplicates.
-- Accession number and period of report are captured during ingestion
-  ([src/sec_client.py](src/sec_client.py)) and stored on every chunk, not only
-  the filing date. This is what year-over-year comparison will key on.
-- A persistent Chroma collection ([src/vector_store.py](src/vector_store.py))
-  with cosine similarity and Chroma's default on-device embedding model. Nothing
-  is sent off the machine.
-- `store_stats()` and the `--probe` flag on the index builder for inspecting
-  what is persisted and how retrieval ranks a question.
-
-### Still open (carried into Week 4-6)
-
-- Add table-aware chunking. Financial statement tables should be extracted as
-  structured rows with their table title and reporting period, rather than being
-  flattened into paragraph text. (The 10-Q financial-statement chunks currently
-  come back as long runs of numbers.)
-- Keep the current lexical scorer as part of hybrid retrieval; do not replace it
-  outright with vectors. Exact terms, ticker symbols, and form/item references
-  are useful financial-research signals.
-- Build the evaluation golden set. Each case should record the question, the
-  expected support/abstention result, and the correct filing section or quoted
-  evidence.
+- Answers are the top chunk truncated to 300 characters behind a template
+  sentence. Real synthesis is Week 5.
+- Two golden-set cases still answer when they should abstain, both because the
+  retrieved evidence genuinely matches the question's words while being about a
+  different subject. See [PROGRESS.md](PROGRESS.md).
+- Retrieval thresholds are tuned against 13 cases; the golden set needs to grow
+  before they can be trusted at scale.
 
 ## Week 2: retrieval and grounding baseline
 
-The current retrieval layer uses transparent lexical scoring over filing chunks.
-It returns only sections sharing meaningful terms with the question; it never
-falls back to unrelated text. When no supporting section is found, the app
-returns the explicit unsupported-answer response with no citations.
+The Week 2 retrieval layer was transparent lexical scoring over filing chunks.
+It returned only sections sharing meaningful terms with the question, never
+falling back to unrelated text, and produced the explicit unsupported-answer
+response with no citations when nothing matched.
 
-This is intentionally simple and inspectable. A future semantic retriever or
-reranker can replace the scorer, but must preserve the same evidence and
-abstention contract.
+It is still the lexical half of hybrid retrieval, and still the fallback when the
+vector store is unavailable — exact terms, ticker symbols, and form/item
+references are signals embeddings tend to blur. Week 4 raised its bar (see
+below) but kept the same evidence-and-abstention contract.
 
 ## Week 3: vector store and metadata
 
@@ -106,10 +95,6 @@ Retrieval is cosine similarity over Chroma's default on-device embedding model
 (`all-MiniLM-L6-v2`, downloaded once to `~/.cache/chroma`). No filing text or
 query leaves the machine.
 
-The store is a persistence layer, not yet the live answer path. The app still
-answers through the Week 2 lexical scorer; Week 4 combines lexical and vector
-retrieval behind the same evidence-and-abstention contract.
-
 ### Build the vector index
 
 Run this once after downloading filings (and again whenever you re-ingest):
@@ -118,12 +103,59 @@ Run this once after downloading filings (and again whenever you re-ingest):
 & "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m src.build_index
 ```
 
-Add `--probe "your question"` to see how similarity search ranks a question
-against the persisted chunks:
+Add `--reset` after changing how filings are chunked — stable IDs keep
+re-ingestion clean, but a chunker that splits differently leaves the previous
+run's rows behind. Add `--probe "your question"` to see how similarity search
+ranks a question against the persisted chunks:
 
 ```powershell
-& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m src.build_index --probe "What is NVCT's cash runway?"
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m src.build_index --reset --probe "What is NVCT's cash runway?"
 ```
+
+## Week 4: table-aware chunking and hybrid retrieval
+
+### Tables are chunked as tables
+
+A filing uses `<table>` for both financial data and page layout — the 10-Q has
+207 tables, of which 17 carry data. Data tables are now lifted out and rendered
+with their caption, one row per line, so a figure keeps the label that explains
+it:
+
+```
+CONDENSED BALANCE SHEETS (USD in thousands) (unaudited)
+June 30, | December 31,
+2026 | 2025
+Cash and cash equivalents | 22,160 | 31,634
+TOTAL ASSETS | 22,376 | 31,709
+```
+
+Prose chunks are capped at 3,000 characters and split on sentence boundaries.
+Validating this surfaced two chunker defects — text counted once per nesting
+level (the largest chunk was 466,558 characters), and the table of contents
+being read as real section headings. Both are fixed; see
+[PROGRESS.md](PROGRESS.md).
+
+### Retrieval
+
+`retrieve_hybrid()` runs both retrievers, gates each independently, and fuses the
+survivors with reciprocal rank fusion. Ranking is BM25 rather than raw term
+overlap, which otherwise favours long chunks so heavily that `Item 4. Controls
+and Procedures` came back as the best evidence about cash.
+
+Abstention is guarded by two gates, and a chunk must clear at least one:
+
+| Gate | Rule |
+| --- | --- |
+| Lexical | ≥ 2 matching terms (section headings count double) **and** ≥ 60% of the question's meaningful terms covered |
+| Vector | cosine distance ≤ 0.60 |
+
+Neither signal separates on its own — measured against the golden set, the
+lexical count is identical for questions that should be answered and questions
+that should not. The vector distance nearly separates cleanly, which is where the
+0.60 floor comes from.
+
+The app falls back to lexical-only when `chromadb` is absent or the index has not
+been built, so the abstention contract holds either way.
 
 ## Install dependencies
 
@@ -131,9 +163,9 @@ against the persisted chunks:
 & "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m pip install -r requirements.txt
 ```
 
-`chromadb` (Week 3) pulls in `onnxruntime` and downloads a ~80 MB embedding
-model on first use. If you only need the Week 2 lexical baseline, the app and its
-tests still run without it.
+`chromadb` pulls in `onnxruntime` and downloads a ~80 MB embedding model on first
+use. If you only need the lexical baseline, the app and its tests still run
+without it — the golden-set tests skip and the app reports keyword-only mode.
 
 ## Load real EDGAR filings
 
@@ -145,24 +177,49 @@ ticker and stores the raw documents locally under `data/`.
 & "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m src.ingest_filings --ticker NVCT --limit-per-form 2 --user-agent "Your Name your-email@example.com"
 ```
 
-Restart `app.py` after ingestion. It detects local EDGAR filings automatically
-and displays the company and section count above the question box. If none are
-available, it continues to use the small demo corpus.
+After ingesting, rebuild the index with `python -m src.build_index --reset` and
+restart `app.py`. The corpus is cached for the life of the process, so a restart
+is what picks up new filings. The status line above the question box reports
+which mode is live — hybrid search over the index, keyword-only over parsed
+filings, or the small demo corpus.
 
 ## Run tests
 
 ```powershell
 cd "C:\Users\yceri\Desktop\SEC Simplifier\sec-simplifier"
-& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m pytest -q tests/test_grounded_qa.py
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m pytest -q
 ```
+
+34 tests: contract tests in `tests/test_grounded_qa.py`, plus the reviewed
+evaluation cases in [tests/golden_set.json](tests/golden_set.json) run by
+`tests/test_golden_set.py`. The golden-set tests skip cleanly until the index has
+been built with `python -m src.build_index`.
 
 ## Run the demo
 
-From the project directory, run:
+`run_demo.py` answers every case in the golden set twice - once with keyword
+search alone, once with hybrid retrieval - and prints both verdicts side by side.
+It needs the index built first.
 
 ```powershell
 & "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\run_demo.py
 ```
+
+```
+  Q  Has the company ever made a profit?
+     expect   supported  <- hybrid differs
+     keyword  ABSTAINS  MISS
+     hybrid   SUPPORTED OK
+     cites    Item 7. Management's Discussion and Analysis (10-K 2026-02-11)
+     why      keyword alone abstains - 'profit' does not appear as such
+
+==============================================================================
+  keyword only : 9/13 correct
+  hybrid       : 11/13 correct
+==============================================================================
+```
+
+Add `--contrast` to show only the cases where the two retrievers disagree.
 
 On this machine, `python` currently resolves to the Microsoft Store launcher,
 so use the full interpreter path above until Python is added to your `PATH`.

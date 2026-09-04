@@ -23,6 +23,8 @@ COLLECTION_NAME = "filings"
 METADATA_FIELDS = (
     "chunk_id",
     "chunk_index",
+    "chunk_type",
+    "table_title",
     "ticker",
     "form",
     "filing_date",
@@ -45,12 +47,22 @@ def _require_chromadb():
     return chromadb
 
 
-def get_collection(persist_dir: Path | str = DEFAULT_PERSIST_DIR):
-    """Return the persistent Chroma collection, creating it if needed."""
+def get_collection(persist_dir: Path | str = DEFAULT_PERSIST_DIR, reset: bool = False):
+    """Return the persistent Chroma collection, creating it if needed.
+
+    `reset` drops the collection first. Use it when chunking changes: stable IDs
+    keep re-ingestion clean, but a chunker that splits differently leaves the
+    previous run's rows behind as orphans.
+    """
     chromadb = _require_chromadb()
     persist_dir = Path(persist_dir)
     persist_dir.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(persist_dir))
+    if reset:
+        try:
+            client.delete_collection(name=COLLECTION_NAME)
+        except Exception:  # collection may not exist yet
+            pass
     return client.get_or_create_collection(
         name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
     )
@@ -68,14 +80,16 @@ def _metadata_for(chunk: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_vector_store(
-    chunks: list[dict[str, Any]], persist_dir: Path | str = DEFAULT_PERSIST_DIR
+    chunks: list[dict[str, Any]],
+    persist_dir: Path | str = DEFAULT_PERSIST_DIR,
+    reset: bool = False,
 ) -> int:
     """Upsert chunks into the store keyed by their stable chunk ID.
 
     Re-running this after a fresh ingestion replaces the same rows instead of
     duplicating them. Returns the total row count after the write.
     """
-    collection = get_collection(persist_dir)
+    collection = get_collection(persist_dir, reset=reset)
 
     # Keep the last chunk seen for any repeated ID; Chroma rejects a batch that
     # contains the same ID twice.
@@ -120,6 +134,26 @@ def query_vector_store(
         hit["distance"] = float(distance)
         hits.append(hit)
     return hits
+
+
+def load_all_chunks(persist_dir: Path | str = DEFAULT_PERSIST_DIR) -> list[dict[str, Any]]:
+    """Return every persisted chunk as a plain dict.
+
+    The lexical half of hybrid retrieval scores the whole corpus, so it reads
+    from the store too - that way the index is the single source of truth and
+    the app never re-parses filing HTML to answer a question.
+    """
+    collection = get_collection(persist_dir)
+    if collection.count() == 0:
+        return []
+
+    rows = collection.get(include=["documents", "metadatas"])
+    chunks: list[dict[str, Any]] = []
+    for document, metadata in zip(rows["documents"], rows["metadatas"]):
+        chunk = dict(metadata)
+        chunk["text"] = document
+        chunks.append(chunk)
+    return chunks
 
 
 def store_stats(persist_dir: Path | str = DEFAULT_PERSIST_DIR) -> dict[str, Any]:

@@ -1,0 +1,98 @@
+{
+  "_about": [
+    "Reviewed evaluation cases for the NVCT corpus. Each case records a question,",
+    "whether the filings should support an answer, and - where it is unambiguous -",
+    "the filing section the evidence ought to come from.",
+    "",
+    "'known_gap' marks a case the current pipeline gets wrong for a reason we",
+    "understand. These are targets, not noise: they are expected to be fixed by",
+    "Week 5 (Claude reading the retrieved evidence), not by tuning retrieval",
+    "thresholds until these ten questions happen to pass.",
+    "",
+    "Week 6 turns this into scored metrics: citation correctness, support, and",
+    "abstention quality. For now tests/test_golden_set.py asserts only the",
+    "supported/abstain contract on non-gap cases."
+  ],
+  "corpus": {
+    "ticker": "NVCT",
+    "forms": ["10-K", "10-Q", "8-K", "DEF 14A"],
+    "note": "Two most recent filings per form, ingested 2026-09-03."
+  },
+  "cases": [
+    {
+      "question": "How much cash does the company have on hand?",
+      "expect": "supported",
+      "why": "Liquidity is disclosed in MD&A and on the balance sheet.",
+      "lexical_alone": "abstains - the filing says 'funds', not 'cash on hand'"
+    },
+    {
+      "question": "What could go wrong with the business?",
+      "expect": "supported",
+      "expect_section_contains": "Risk Factors",
+      "why": "Plain-English paraphrase of Item 1A.",
+      "lexical_alone": "returns MD&A - matches the word 'business' instead"
+    },
+    {
+      "question": "Who are the executive officers and what are they paid?",
+      "expect": "supported",
+      "expect_section_contains": "Executive Compensation",
+      "why": "Should reach the compensation tables, not just prose."
+    },
+    {
+      "question": "Has the company ever made a profit?",
+      "expect": "supported",
+      "why": "Accumulated deficit and operating losses are disclosed.",
+      "lexical_alone": "abstains - 'profit' does not appear as such"
+    },
+    {
+      "question": "Describe the drug pipeline and clinical trials",
+      "expect": "supported",
+      "why": "Core business description for a clinical-stage pharma company."
+    },
+    {
+      "question": "Are there any pending lawsuits?",
+      "expect": "supported",
+      "why": "Legal proceedings are disclosed, including when the answer is 'none'."
+    },
+    {
+      "question": "What stock exchange is the company listed on?",
+      "expect": "supported",
+      "expect_section_contains": "Market for Registrant",
+      "why": "Disclosed on the cover page and in Item 5."
+    },
+    {
+      "question": "Who audits the financial statements?",
+      "expect": "supported",
+      "why": "The auditor's report names the firm."
+    },
+    {
+      "question": "What is the price of Bitcoin?",
+      "expect": "abstain",
+      "why": "Wholly outside the filings; no term overlap at all."
+    },
+    {
+      "question": "What was the weather in New York yesterday?",
+      "expect": "abstain",
+      "why": "Off-topic, but shares tokens ('New York') with the address block."
+    },
+    {
+      "question": "What is the companys carbon emissions target?",
+      "expect": "abstain",
+      "why": "Plausible-sounding disclosure this company does not make."
+    },
+    {
+      "question": "How many patents does Apple hold?",
+      "expect": "abstain",
+      "known_gap": true,
+      "why": "About a different company.",
+      "gap_reason": "The filings do discuss patents, so retrieval finds real, on-topic-looking evidence. Nothing at the retrieval layer knows 'Apple' is not this registrant. Week 5: the generator reads the evidence and should refuse."
+    },
+    {
+      "question": "What is the CEO home address?",
+      "expect": "abstain",
+      "known_gap": true,
+      "why": "Not disclosed; only the corporate address is.",
+      "gap_reason": "An address is present in the filing, so retrieval cannot distinguish 'an address' from 'the CEO's home address'. Week 5: the generator must see the retrieved text is a corporate address and abstain."
+    }
+  ]
+}
