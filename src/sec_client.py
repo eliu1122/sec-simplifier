@@ -30,6 +30,7 @@ class FilingRecord:
     accession_number: str
     primary_document: str
     source_url: str
+    period_of_report: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +38,7 @@ class FilingRecord:
             "cik": self.cik,
             "form": self.form,
             "filing_date": self.filing_date,
+            "period_of_report": self.period_of_report,
             "accession_number": self.accession_number,
             "primary_document": self.primary_document,
             "source_url": self.source_url,
@@ -101,6 +103,13 @@ class SecClient:
             accession_nodash = accession_raw.replace("-", "")
             primary_doc = recent["primaryDocument"][i]
             filing_date = recent["filingDate"][i]
+            # Period the filing reports on (fiscal year / quarter end). EDGAR
+            # leaves this blank for some 8-Ks; fall back to the filing date so
+            # every chunk still has a usable period for year-over-year work.
+            period_of_report = (recent.get("reportDate") or [])[i:i + 1]
+            period_of_report = period_of_report[0] if period_of_report else ""
+            if not period_of_report:
+                period_of_report = filing_date
 
             source_url = ARCHIVE_BASE_URL.format(
                 cik_int=cik_int, accession_nodash=accession_nodash, filename=primary_doc
@@ -115,6 +124,7 @@ class SecClient:
                     accession_number=accession_raw,
                     primary_document=primary_doc,
                     source_url=source_url,
+                    period_of_report=period_of_report,
                 )
             )
             counts[form] += 1

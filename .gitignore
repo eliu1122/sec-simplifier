@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 data/raw/
 data/metadata/
+data/chroma/
 .DS_Store
