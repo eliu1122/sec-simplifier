@@ -32,7 +32,9 @@ The repo now has a minimal working MVP around the grounded Q&A loop:
 - [src/corpus.py](src/corpus.py): turns downloaded filings into chunks with full metadata
 - [src/vector_store.py](src/vector_store.py): persists chunks and metadata in a local Chroma store
 - [src/build_index.py](src/build_index.py): CLI that builds or refreshes the vector index
+- [src/generate.py](src/generate.py): Claude writes the answer from retrieved evidence, with every quote verified
 - [tests/test_grounded_qa.py](tests/test_grounded_qa.py): chunking, retrieval, grounding, and vector-store contract tests
+- [tests/test_generate.py](tests/test_generate.py): quote verification and generation wiring, all offline
 - [tests/golden_set.json](tests/golden_set.json): reviewed evaluation cases, with known gaps recorded explicitly
 
 ## Six-week build roadmap
@@ -46,27 +48,30 @@ account of what is built, what is pending, and the known weaknesses.
 | 2 | Ingestion and chunking | Parse downloaded filing HTML into section-aware chunks that retain ticker, form, filing date, document name, and SEC source URL. | Core complete - section-aware chunks are loaded into the app. |
 | 3 | Vector store and metadata | Persist chunks and metadata in Chroma, with a stable chunk ID, filing accession number, section, period, and source URL. | Complete - `src/build_index.py` writes a persistent Chroma store; every chunk carries a stable ID and full filing metadata. |
 | 4 | Hybrid retrieval | Combine lexical/keyword search with vector similarity search, then rerank the strongest evidence chunks. | Complete - table-aware chunking, BM25 + vector search fused with reciprocal rank fusion, two-gate abstention. Live in the app. |
-| 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Next. |
+| 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Built - structured output, verified quotes, abstention. **Live path unrun: needs an `ANTHROPIC_API_KEY`.** |
 | 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Baseline started - UI evidence cards, and a 13-case golden set scoring 11/13. |
 
 ### Current position
 
-The project is at the end of **Week 4** and ready for **Week 5**. The app now
-answers through hybrid retrieval over the persisted Chroma index: financial
-tables are chunked as tables, lexical and vector search are fused, and abstention
-is guarded by two independent gates. What is still missing is a model that
-*reads* the retrieved evidence — answers are excerpted, not written, and the two
-open evaluation gaps both need a reader rather than a better retriever.
+The project is at the end of **Week 5**. The full pipeline exists: hybrid
+retrieval over the Chroma index feeds a Claude call that writes the answer from
+the retrieved evidence, and every quote it returns is checked against the source
+before it is shown.
 
-### Still open (carried into Week 5-6)
+**The generation path has not been run against the live API.** There is no
+`ANTHROPIC_API_KEY` on this machine, so it is unit-tested against fakes and stub
+clients only. Without credentials the app behaves exactly as it did in Week 4 —
+extractive answers — and says so in the status line.
 
-- Answers are the top chunk truncated to 300 characters behind a template
-  sentence. Real synthesis is Week 5.
-- Two golden-set cases still answer when they should abstain, both because the
-  retrieved evidence genuinely matches the question's words while being about a
-  different subject. See [PROGRESS.md](PROGRESS.md).
+### Still open (carried into Week 6)
+
+- Run the generation path for real and see whether it closes the two known
+  golden-set gaps. See [PROGRESS.md](PROGRESS.md) for how.
+- Quote verification proves a quote is genuine, not that it supports the claim
+  built on it. That is Week 6's "support" metric.
 - Retrieval thresholds are tuned against 13 cases; the golden set needs to grow
   before they can be trusted at scale.
+- No prompt caching yet, so every answered question pays full input cost.
 
 ## Week 2: retrieval and grounding baseline
 
@@ -157,6 +162,46 @@ that should not. The vector distance nearly separates cleanly, which is where th
 The app falls back to lexical-only when `chromadb` is absent or the index has not
 been built, so the abstention contract holds either way.
 
+## Week 5: grounded generation with Claude
+
+Retrieval matches words, not meaning, so it will return real, on-topic-looking
+text for a question about a different company or a different kind of fact.
+[src/generate.py](src/generate.py) is the step that reads the evidence and
+decides.
+
+- **Structured output** — `client.messages.parse()` with a Pydantic
+  `GroundedAnswer` model (`supported`, `answer`, `citations`,
+  `reason_if_unsupported`), so abstention is a boolean rather than a phrase to
+  pattern-match.
+- **The model never handles citation metadata.** It returns an evidence block id
+  and a quote; section, form, dates, and source URL are looked up locally from
+  the id.
+- **Every quote is verified before display.** A quote that does not appear
+  verbatim in the chunk it cites is dropped, and an answer left with no verified
+  citation is downgraded to an abstention. A fabricated quote cannot reach the
+  user.
+- **The generator can only narrow.** It runs after retrieval and sees only
+  chunks retrieval already approved, so it can reject evidence but never
+  introduce any.
+- **Failure is contained.** An API error, timeout, or refusal falls back to the
+  Week 4 extractive answer — degraded, but still cited.
+
+### Turning it on
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\app.py
+```
+
+The status line changes to `... - answers written from cited evidence`. Set
+`SEC_SIMPLIFIER_MODEL` to override the default `claude-opus-5`. Without a key
+everything still runs in extractive mode, and `run_demo.py --no-generate` skips
+generation even when a key is present.
+
+> **Not yet verified against the live API.** This path has only been exercised
+> with injected fakes and a stub client — see [PROGRESS.md](PROGRESS.md) for what
+> is and is not tested, and how to check it.
+
 ## Install dependencies
 
 ```powershell
@@ -166,6 +211,9 @@ been built, so the abstention contract holds either way.
 `chromadb` pulls in `onnxruntime` and downloads a ~80 MB embedding model on first
 use. If you only need the lexical baseline, the app and its tests still run
 without it — the golden-set tests skip and the app reports keyword-only mode.
+
+`anthropic` is optional in the same way. Without it, or without credentials, the
+app answers with filing excerpts instead of written answers.
 
 ## Load real EDGAR filings
 
@@ -190,16 +238,60 @@ cd "C:\Users\yceri\Desktop\SEC Simplifier\sec-simplifier"
 & "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m pytest -q
 ```
 
-34 tests: contract tests in `tests/test_grounded_qa.py`, plus the reviewed
+53 tests: contract tests in `tests/test_grounded_qa.py`, generation and
+quote-verification tests in `tests/test_generate.py`, plus the reviewed
 evaluation cases in [tests/golden_set.json](tests/golden_set.json) run by
 `tests/test_golden_set.py`. The golden-set tests skip cleanly until the index has
 been built with `python -m src.build_index`.
 
-## Run the demo
+None of these call the Claude API. With `ANTHROPIC_API_KEY` set, the golden-set
+tests pick the generator up automatically and start costing money — watch
+`test_known_gaps_are_still_recorded_as_gaps`, which fails when a known gap starts
+passing.
+
+## Ask one question
+
+`ask.py` is the quickest way to try the pipeline. It shows every stage - what
+retrieval selected, what the answer was, which quotes survived verification, and
+what the call cost. **One question is one API call**, so this is the cheap way to
+test generation.
+
+```powershell
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\ask.py "How much cash does the company have on hand?"
+```
+
+```
+RETRIEVED 3 chunk(s):
+  - [prose] Item 7. Management's Discussion and Analysis (10-K 2026-02-11)
+  - [table] Item 2. Management's Discussion and Analysis (10-Q 2026-05-05)
+
+ANSWER  [WRITTEN BY CLAUDE]
+  The company reports it held $31.6 million in cash and cash equivalents as of
+  December 31, 2025.
+
+VERIFIED QUOTES
+  Item 7. Management's Discussion and Analysis   10-K filed 2026-02-11
+    "As of December 31, 2025, we had $31.6 million of cash and cash equivalents"
+    https://www.sec.gov/Archives/edgar/data/.../tmb-20251231x10k.htm
+
+  3,120 in / 210 out tokens on claude-opus-5 - about $0.0209
+```
+
+Run it with no question for an interactive prompt, or `--no-generate` for
+retrieval only with no API call. Without a key it runs in extractive mode, which
+is a useful contrast: for the question above the extractive answer leads with
+unrelated text about R&D expenses, and buries the $31.6 million figure in the
+middle of a 500-character excerpt.
+
+If a quote the model returns is not found in the evidence it cited, it appears
+under `REJECTED QUOTE(S)` and does not count toward the answer.
+
+## Run the full comparison
 
 `run_demo.py` answers every case in the golden set twice - once with keyword
 search alone, once with hybrid retrieval - and prints both verdicts side by side.
-It needs the index built first.
+It needs the index built first. With a key set this is 13 API calls; add
+`--no-generate` to keep it free.
 
 ```powershell
 & "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\run_demo.py

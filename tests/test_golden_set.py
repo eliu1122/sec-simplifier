@@ -40,10 +40,27 @@ def _cases():
     return data["cases"]
 
 
-def _answer(question: str, corpus: list[dict]) -> dict:
+@pytest.fixture(scope="module")
+def generator():
+    """The Claude generator when credentials exist, else None (extractive mode).
+
+    With no generator these cases measure retrieval alone - the Week 4 result.
+    With one they measure the full pipeline, which is what should finally close
+    the two known gaps.
+    """
+    from src import generate
+
+    if not generate.is_available():
+        return None
+    return lambda question, evidence: generate.generate_grounded_answer(question, evidence)
+
+
+def _answer(question: str, corpus: list[dict], generator=None) -> dict:
     from src.vector_store import query_vector_store
 
-    return answer_question(question, corpus, query_vector_store(question, limit=10))
+    return answer_question(
+        question, corpus, query_vector_store(question, limit=10), generator=generator
+    )
 
 
 @pytest.mark.parametrize(
@@ -51,8 +68,8 @@ def _answer(question: str, corpus: list[dict]) -> dict:
     [case for case in _cases() if not case.get("known_gap")],
     ids=lambda case: case["question"][:48],
 )
-def test_golden_case_matches_expected_support(case, indexed_corpus):
-    result = _answer(case["question"], indexed_corpus)
+def test_golden_case_matches_expected_support(case, indexed_corpus, generator):
+    result = _answer(case["question"], indexed_corpus, generator)
     expected_supported = case["expect"] == "supported"
 
     assert result["supported"] is expected_supported, (
@@ -70,8 +87,8 @@ def test_golden_case_matches_expected_support(case, indexed_corpus):
     [case for case in _cases() if case.get("expect_section_contains")],
     ids=lambda case: case["question"][:48],
 )
-def test_golden_case_cites_the_expected_section(case, indexed_corpus):
-    result = _answer(case["question"], indexed_corpus)
+def test_golden_case_cites_the_expected_section(case, indexed_corpus, generator):
+    result = _answer(case["question"], indexed_corpus, generator)
     sections = [item["section"] for item in result["evidence"]]
 
     assert any(case["expect_section_contains"] in section for section in sections), (
@@ -79,7 +96,7 @@ def test_golden_case_cites_the_expected_section(case, indexed_corpus):
     )
 
 
-def test_known_gaps_are_still_recorded_as_gaps(indexed_corpus):
+def test_known_gaps_are_still_recorded_as_gaps(indexed_corpus, generator):
     """Fail loudly once a known gap starts passing, so the file gets updated.
 
     A gap that quietly fixes itself is a golden set drifting out of date.
@@ -88,7 +105,7 @@ def test_known_gaps_are_still_recorded_as_gaps(indexed_corpus):
         case["question"]
         for case in _cases()
         if case.get("known_gap")
-        and _answer(case["question"], indexed_corpus)["supported"]
+        and _answer(case["question"], indexed_corpus, generator)["supported"]
         is (case["expect"] == "supported")
     ]
 

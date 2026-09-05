@@ -402,40 +402,103 @@ def _why_it_matters(section: str, question: str) -> str:
     return "Read the cited filing section to verify the statement in the company’s own words."
 
 
+UNSUPPORTED_ANSWER = "I don't see this disclosed in the filings available for this company."
+
+
+def _unsupported(why: str) -> dict[str, Any]:
+    return {
+        "answer": UNSUPPORTED_ANSWER,
+        "supported": False,
+        "citations": [],
+        "evidence": [],
+        "why_it_matters": why,
+    }
+
+
+def _generated_answer(
+    question: str,
+    supporting: list[dict[str, Any]],
+    generator: Any,
+) -> dict[str, Any] | None:
+    """Let the generator read the evidence and decide. None means fall back.
+
+    A generator that fails is not allowed to take the app down or, worse, to
+    silently produce an ungrounded answer - the caller drops back to the
+    extractive response, which is still cited.
+    """
+    try:
+        result = generator(question, supporting)
+    except Exception:
+        return None
+
+    if not result.get("supported"):
+        abstained = _unsupported(
+            result.get("reason")
+            or "The filing text retrieved for this question does not answer it."
+        )
+        abstained["generated"] = True
+        if result.get("usage"):
+            abstained["usage"] = result["usage"]
+        return abstained
+
+    citations = result.get("citations", [])
+    return {
+        "answer": result["answer"],
+        "supported": True,
+        # Quotes here are verified against the filing text, so the citation is
+        # the exact sentence backing the claim rather than a section pointer.
+        "citations": [
+            f"{c['section']} | {c['form']} | {c['filing_date']} | {c['source_url']}"
+            for c in citations
+        ],
+        "evidence": [
+            {
+                "section": c["section"],
+                "form": c["form"],
+                "filing_date": c["filing_date"],
+                "excerpt": c["quote"],
+                "source_url": c["source_url"],
+            }
+            for c in citations
+        ],
+        "why_it_matters": _why_it_matters(citations[0]["section"], question),
+        "generated": True,
+        "usage": result.get("usage", {}),
+        # Quotes the model offered that did not survive verification. Empty is
+        # the normal case; anything here is worth looking at.
+        "rejected_citations": result.get("rejected_citations", []),
+    }
+
+
 def answer_question(
     question: str,
     corpus: list[dict[str, Any]],
     vector_hits: list[dict[str, Any]] | tuple = (),
+    generator: Any = None,
 ) -> dict[str, Any]:
     """Return a grounded answer with citations, or an honest 'not found' answer when unsupported.
 
     `vector_hits` are similarity results from the Chroma store. Passing none
     falls back to the lexical-only baseline, so the app still answers when
     `chromadb` is not installed or the index has not been built.
+
+    `generator` is called as `generator(question, evidence)` to write the answer
+    from the retrieved evidence - see `src.generate`. Without one, the answer is
+    the extractive Week 4 response: the top chunk, excerpted. Retrieval and the
+    abstention contract are identical either way; the generator can only narrow
+    what gets answered, never widen it, because it never sees the filing beyond
+    the chunks retrieval already approved.
     """
     supporting = retrieve_hybrid(question, corpus, vector_hits)
     if not supporting:
-        return {
-            "answer": "I don't see this disclosed in the filings available for this company.",
-            "supported": False,
-            "citations": [],
-            "evidence": [],
-            "why_it_matters": "Try a broader question or add more filings before drawing a conclusion.",
-        }
+        return _unsupported(
+            "Try a broader question or add more filings before drawing a conclusion."
+        )
 
-    joined = " ".join(chunk["text"] for chunk in supporting)
-    if "lawsuit" in question.lower() or "settlement" in question.lower() or "exact" in question.lower():
-        if not any(
-            keyword in joined.lower()
-            for keyword in ["lawsuit", "settlement", "amount", "agreed to pay", "litigation"]
-        ):
-            return {
-                "answer": "I don't see this disclosed in the filings available for this company.",
-                "supported": False,
-                "citations": [],
-                "evidence": [],
-                "why_it_matters": "The available filing text does not support a precise answer to this question.",
-            }
+    if generator is not None:
+        generated = _generated_answer(question, supporting, generator)
+        if generated is not None:
+            return generated
 
     best = supporting[0]
     answer = f"Based on {best['section']} and related filing text, the company states: {best['text'][:300]}"

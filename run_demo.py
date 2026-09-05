@@ -65,7 +65,16 @@ def verdict(supported: bool) -> str:
     return "SUPPORTED" if supported else "ABSTAINS "
 
 
-def evaluate(case: dict, corpus: list[dict]) -> dict:
+def load_generator():
+    """The Claude generator when credentials exist, else None."""
+    from src import generate
+
+    if not generate.is_available():
+        return None
+    return lambda question, evidence: generate.generate_grounded_answer(question, evidence)
+
+
+def evaluate(case: dict, corpus: list[dict], generator=None) -> dict:
     """Answer one case both ways."""
     from src.vector_store import query_vector_store
 
@@ -75,7 +84,10 @@ def evaluate(case: dict, corpus: list[dict]) -> dict:
     # The lexical baseline is answer_question with no vector hits supplied.
     lexical = answer_question(question, corpus)
     hybrid = answer_question(
-        question, corpus, query_vector_store(question, limit=VECTOR_CANDIDATES)
+        question,
+        corpus,
+        query_vector_store(question, limit=VECTOR_CANDIDATES),
+        generator=generator,
     )
     return {
         "case": case,
@@ -119,17 +131,28 @@ def main() -> None:
         action="store_true",
         help="Show only the cases where keyword and hybrid retrieval disagree.",
     )
+    parser.add_argument(
+        "--no-generate",
+        action="store_true",
+        help="Skip Claude generation even when credentials exist (no API cost).",
+    )
     args = parser.parse_args()
 
     corpus, label = load_corpus()
     cases = json.loads(GOLDEN_SET_PATH.read_text(encoding="utf-8"))["cases"]
+    generator = None if args.no_generate else load_generator()
 
     print("=" * WIDTH)
     print("SEC Simplifier - keyword search vs hybrid retrieval")
     print(f"Corpus: {label}")
+    print(
+        "Answers: written by Claude from cited evidence"
+        if generator
+        else "Answers: excerpted from filings (no ANTHROPIC_API_KEY - generation off)"
+    )
     print("=" * WIDTH)
 
-    results = [evaluate(case, corpus) for case in cases]
+    results = [evaluate(case, corpus, generator) for case in cases]
     shown = [r for r in results if r["disagree"]] if args.contrast else results
 
     if not shown:
@@ -154,8 +177,13 @@ def main() -> None:
             "\nRemaining misses are recorded as known gaps in tests/golden_set.json:\n"
             "the retrieved text genuinely matches the question's words while being\n"
             "about a different subject. Resolving that needs a model to read the\n"
-            "evidence, which is Week 5."
+            "evidence."
         )
+        if not generator:
+            print(
+                "Set ANTHROPIC_API_KEY and re-run to put Claude in the loop and see\n"
+                "whether it closes them."
+            )
 
 
 if __name__ == "__main__":

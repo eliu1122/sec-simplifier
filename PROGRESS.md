@@ -19,7 +19,7 @@ flowchart TD
     B["<b>2 · Ingestion &amp; chunking</b><br/>section-aware and table-aware splits<br/>bounded to 3,000 characters"]
     C["<b>3 · Vector store &amp; metadata</b><br/>Chroma · stable chunk IDs<br/>per-filing citation metadata"]
     D["<b>4 · Hybrid retrieval</b><br/>BM25 + vector search, RRF fusion<br/>two gates guard abstention"]
-    E["<b>5 · Claude orchestration</b><br/>grounded generation<br/>answers only from evidence"]
+    E["<b>5 · Claude orchestration</b><br/>writes the answer from the evidence<br/>every quote verified against source"]
     F["<b>6 · Cited answer</b><br/>quotes the source filing<br/>or flags the disclosure gap"]
 
     A --> B --> C --> D --> E --> F
@@ -29,8 +29,7 @@ flowchart TD
     classDef planned fill:#eef2ff,stroke:#3f51b5,color:#22307a;
 
     class A,B,C,D done;
-    class E planned;
-    class F partial;
+    class E,F partial;
 ```
 
 **Legend** — 🟢 done · 🟡 partial (baseline in place, work remaining) · 🔵 planned
@@ -41,7 +40,7 @@ flowchart TD
 | 2 · Ingestion & chunking | 🟢 done | [src/grounded_qa.py](src/grounded_qa.py), [src/tables.py](src/tables.py), [src/corpus.py](src/corpus.py) |
 | 3 · Vector store & metadata | 🟢 done | [src/vector_store.py](src/vector_store.py), [src/build_index.py](src/build_index.py) |
 | 4 · Hybrid retrieval | 🟢 done | [src/grounded_qa.py](src/grounded_qa.py), [app.py](app.py) |
-| 5 · Grounded generation (Claude) | 🔵 next | — |
+| 5 · Grounded generation (Claude) | 🟡 built and unit-tested; **live path unrun — needs an API key** | [src/generate.py](src/generate.py) |
 | 6 · Cited answers & evaluation | 🟡 UI + abstention live; golden set scaffolded, scoring pending | [tests/golden_set.json](tests/golden_set.json) |
 
 ---
@@ -270,45 +269,134 @@ verdicts side by side, which is the shortest way to see what Week 4 bought:
 
 ---
 
+## Week 5 — Grounded generation with Claude 🟡
+
+**Goal:** a model reads the retrieved evidence and writes the answer, or declines.
+
+> **Status: built and unit-tested, but the live API path has never run.** There is
+> no `ANTHROPIC_API_KEY` on this machine, so every test below uses an injected
+> fake or a stub client. The request shape, the verification logic, and the
+> fallback behaviour are all covered; whether Claude's *judgement* actually
+> closes the two known gaps is untested. See "How to verify" below.
+
+### The design ([src/generate.py](src/generate.py))
+
+Retrieval narrows the filing to a few candidate chunks. It matches words, not
+meaning — which is exactly why Week 4 ended with two unfixable gaps. This stage
+adjudicates.
+
+- **Structured output.** `client.messages.parse()` with a Pydantic
+  `GroundedAnswer` model (`supported`, `answer`, `citations`,
+  `reason_if_unsupported`). A boolean field is a more reliable abstention signal
+  than parsing prose for a refusal phrase.
+- **The model never handles citation metadata.** It returns only an evidence
+  block id and a quote. Section, form, dates, and source URL are looked up
+  locally from the id, so a citation cannot be wrong about where it came from.
+- **Every quote is verified before display.** `verify_citations()` checks the
+  quote appears verbatim in the chunk it names, normalizing only cosmetic
+  differences (curly quotes, dashes, whitespace, case). A citation that fails is
+  dropped; **an answer left with no verified citation is downgraded to an
+  abstention.** A model that invents a quote cannot get it past this.
+- **The generator can only narrow.** It is called *after* retrieval and only
+  sees chunks retrieval already approved, so it can reject evidence but never
+  introduce any. Questions retrieval rejected never reach it.
+- **Failure is contained.** An API error, timeout, or safety refusal falls back
+  to the Week 4 extractive answer rather than erroring — degraded, but still
+  cited.
+
+Model is `claude-opus-5` with adaptive thinking, overridable with
+`SEC_SIMPLIFIER_MODEL`. `anthropic` is an optional dependency like `chromadb`;
+without it, or without credentials, the app runs exactly as it did in Week 4 and
+the status line says so.
+
+### Removed: the hard-coded keyword guard
+
+`answer_question` special-cased the words "lawsuit", "settlement", and "exact",
+abstaining unless the evidence contained one of five other keywords. It was a
+placeholder for judgement the model should make. Deleting it did not break the
+abstention test that motivated it — the Week 4 lexical gate already handles that
+case on its own.
+
+### What is actually tested
+
+53 tests pass, none of which call the API:
+
+- **Quote verification** — fabricated quotes rejected; a real quote attributed to
+  the wrong chunk rejected; unknown chunk ids rejected; cosmetic differences
+  (case, whitespace, typographic quotes and dashes) tolerated.
+- **The downgrade** — a confident answer whose every quote fails verification
+  comes back unsupported with an empty answer.
+- **Request shape**, against a stub client — model, `output_format`, adaptive
+  thinking, and evidence ids present in the prompt.
+- **Refusal handling** — `stop_reason: "refusal"` becomes an abstention.
+- **Contract wiring** — a generated answer replaces the extractive one and cites
+  verified quotes; a generator that abstains produces the standard
+  not-disclosed response; a generator that raises falls back; the generator is
+  never consulted when retrieval found nothing.
+
+### How to verify the part that is untested
+
+Cheapest first — one question, one API call, every stage shown:
+
+```powershell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\ask.py "How much cash does the company have on hand?"
+```
+
+[ask.py](ask.py) prints what retrieval selected, the answer, the quotes that
+passed verification, any that were rejected, and the token cost. Then the full
+suite:
+
+```powershell
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m pytest -q
+```
+
+The golden-set tests pick the generator up automatically. The signal to watch is
+`test_known_gaps_are_still_recorded_as_gaps` — it **fails** when a known gap
+starts passing, and its message says to clear the flag. If Week 5 worked, that
+test failing is the evidence.
+
+Expect real cost: 13 golden-set cases × ~2-4K input tokens each on Opus 5.
+
+---
+
 ## Future work
-
-### Week 5 — Grounded generation (Claude) 🔵 (next)
-
-- Claude orchestration that answers **only** from retrieved evidence and abstains
-  when the evidence is inadequate.
-- Replaces the current truncate-the-top-chunk placeholder with real synthesis
-  that still quotes and cites.
-- System-prompt guardrails against using outside knowledge; every claim traceable
-  to a retrieved chunk.
-- **Closes the two known golden-set gaps.** Both need a reader that can tell the
-  retrieved evidence is about a different subject than the question — the
-  registrant's patents rather than Apple's, a corporate address rather than a
-  home one. Retrieval cannot do this; the generator can.
-- Also replaces the hard-coded keyword guard in `answer_question` that special-
-  cases the words "lawsuit", "settlement", and "exact" — a placeholder standing
-  in for judgement the model should be making.
 
 ### Week 6 — Cited answers and evaluation 🟡
 
+- **Run Week 5 against the golden set first.** Everything below assumes the
+  generation path has actually been exercised.
 - Quoted evidence and source links in the UI (baseline exists — evidence cards
-  and source links are already rendered).
+  and source links are already rendered). Now that citations are verified quotes
+  rather than 500-character excerpts, the evidence cards should show the quote
+  in context.
 - Grow the golden set beyond its current 13 cases, and cover the 10-Q and DEF 14A
   as deliberately as the 10-K.
 - Score **citation correctness**, **support** (does the cited text actually back
-  the answer), and **abstention quality** — turning
-  [tests/golden_set.json](tests/golden_set.json) from a pass/fail contract into
-  measured metrics with a tracked baseline.
+  the answer — the gap verification cannot close), and **abstention quality** —
+  turning [tests/golden_set.json](tests/golden_set.json) from a pass/fail
+  contract into measured metrics with a tracked baseline.
+- **Prompt caching** for the system prompt, to cut the per-question cost that
+  Week 5 introduced.
 
 ---
 
 ## Known weaknesses / open risks
 
+- **Week 5's live path has never run.** No API key on this machine. The wiring,
+  verification, and fallback are unit-tested against fakes; Claude's actual
+  judgement on these filings is unverified, and so is whether it closes the two
+  known gaps. This is the largest open risk in the project.
+- **Verification proves a quote is real, not that it supports the claim.** A
+  model could quote accurately and still draw a conclusion the quote does not
+  license. Catching that is Week 6's "support" metric.
 - **Retrieval cannot tell whose facts these are.** The two open golden-set gaps.
   A question about another company's patents, or a person's home address, finds
-  evidence that genuinely matches the words. Needs Week 5.
-- **Answers are not written, only excerpted.** The response is the top chunk
-  truncated to 300 characters behind a template sentence. It reads as an answer
-  without being one. Week 5.
+  evidence that genuinely matches the words. Week 5 is built to close these but
+  has not been run against them.
+- **Cost per question is now real.** Every answered question is an Opus 5 call
+  with several thousand tokens of evidence. No caching of the system prompt or
+  evidence yet, and no per-session budget.
 - **Thresholds are tuned on 13 cases.** The 0.60 distance floor and 60% coverage
   bar separate the current golden set; they are not validated at any scale.
   Widening the set may move them.
