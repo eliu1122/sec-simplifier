@@ -84,8 +84,13 @@ company to **any ticker searched on demand** — see below.
   exactly the shape it was built to close.
 - Quote verification proves a quote is genuine, not that it supports the claim
   built on it. Measuring that needs a judge.
-- 26 cases on one filer is a small basis for the retrieval thresholds. Now that
-  more companies can be loaded, that basis can grow.
+- **The retrieval thresholds do not generalize, and this is now measured.**
+  Scoring the portable golden-set cases against three companies gives 100% recall
+  every time but specificity of 62% (NVCT), 38% (QURE) and 25% (AAPL). On the
+  latter two, no distance floor separates the questions that should be answered
+  from those that should not - the ranges overlap. See [PROGRESS.md](PROGRESS.md).
+  This makes the unrun generation step the only remaining mechanism that could
+  fix abstention.
 
 ## Searching any company
 
@@ -401,6 +406,26 @@ with a diagnosis and a class:
 `--save-baseline` records a run to `tests/eval_baseline.json`; later runs print
 the delta, so a change that helps one metric and quietly costs another shows up.
 `--no-generate` scores retrieval only, with no API cost.
+
+### Scoring a different company
+
+Nineteen of the 26 cases are marked `portable` - their expectation holds for any
+US filer - so they can be scored against any loaded company:
+
+```powershell
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\evaluate.py --ticker AAPL
+```
+
+Doing this is what showed the retrieval thresholds were fit to one company:
+
+| Company | recall | specificity | overall |
+| --- | --- | --- | --- |
+| NVCT | 100% | 62% | 16/19 |
+| AAPL | 100% | 25% | 13/19 |
+| QURE | 100% | 38% | 14/19 |
+
+Cases naming this company's drug, and "How many patents does Apple hold?" - a
+fair question when the loaded company *is* Apple - are deliberately not portable.
 
 ## Run the full comparison
 

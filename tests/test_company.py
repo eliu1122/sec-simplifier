@@ -284,6 +284,35 @@ def test_only_one_company_loads_at_a_time(monkeypatch):
         time.sleep(0.01)
 
 
+def test_an_unscoped_read_would_mix_companies(tmp_path):
+    """The hazard scoping exists to prevent, pinned so it cannot creep back.
+
+    An unscoped read is not an error - it is how the index builder loads
+    everything - so nothing else would catch a caller that forgot the ticker.
+    """
+    pytest.importorskip("chromadb")
+    from src.vector_store import build_vector_store, load_all_chunks
+
+    persist_dir = tmp_path / "chroma"
+    build_vector_store(
+        [
+            {
+                "chunk_id": f"{ticker.lower()}:business:0", "ticker": ticker, "form": "10-K",
+                "filing_date": "2026-01-01", "period_of_report": "2025-12-31",
+                "accession_number": f"acc-{ticker}", "section": "Item 1. Business",
+                "text": f"{ticker} reported record revenue for the fiscal year.",
+                "source_url": f"https://example.com/{ticker}", "document_name": f"{ticker}.htm",
+                "chunk_type": "text", "table_title": "", "chunk_index": 0,
+            }
+            for ticker in ("AAAA", "BBBB", "CCCC")
+        ],
+        persist_dir=persist_dir,
+    )
+
+    assert len({c["ticker"] for c in load_all_chunks(persist_dir)} ) == 3
+    assert {c["ticker"] for c in load_all_chunks(persist_dir, ticker="BBBB")} == {"BBBB"}
+
+
 def test_lexical_index_keeps_several_companies_cached():
     """Switching companies must not re-tokenize on every question."""
     from src.grounded_qa import _INDEX_CACHE, _lexical_index

@@ -18,11 +18,18 @@
     "question's words. No distance floor or coverage bar separates them, because",
     "the mismatch is in meaning, not vocabulary.",
     "",
-    "Score this file with `python evaluate.py`."
+    "Score this file with `python evaluate.py`.",
+    "",
+    "'portable' marks a case whose expectation holds for any US filer, so it can be scored against a different company with `python evaluate.py --ticker AAPL`. Cases naming this company's drug, and 'How many patents does Apple hold?' (a fair question when the loaded company is Apple), are deliberately not portable."
   ],
   "corpus": {
     "ticker": "NVCT",
-    "forms": ["10-K", "10-Q", "8-K", "DEF 14A"],
+    "forms": [
+      "10-K",
+      "10-Q",
+      "8-K",
+      "DEF 14A"
+    ],
     "note": "Two most recent filings per form, ingested 2026-09-03; 637 chunks."
   },
   "cases": [
@@ -30,25 +37,29 @@
       "question": "How much cash does the company have on hand?",
       "expect": "supported",
       "why": "Liquidity is disclosed in MD&A and on the balance sheet.",
-      "lexical_alone": "abstains - the filing says 'funds', not 'cash on hand'"
+      "lexical_alone": "abstains - the filing says 'funds', not 'cash on hand'",
+      "portable": true
     },
     {
       "question": "What could go wrong with the business?",
       "expect": "supported",
       "expect_section_contains": "Risk Factors",
       "why": "Plain-English paraphrase of Item 1A.",
-      "lexical_alone": "returns MD&A - matches the word 'business' instead"
+      "lexical_alone": "returns MD&A - matches the word 'business' instead",
+      "portable": true
     },
     {
       "question": "Who are the executive officers and what are they paid?",
       "expect": "supported",
-      "why": "Compensation tables appear in both the 10-K and the proxy."
+      "why": "Compensation tables appear in both the 10-K and the proxy.",
+      "portable": true
     },
     {
       "question": "Has the company ever made a profit?",
       "expect": "supported",
       "why": "Accumulated deficit and operating losses are disclosed.",
-      "lexical_alone": "abstains - 'profit' does not appear as such"
+      "lexical_alone": "abstains - 'profit' does not appear as such",
+      "portable": true
     },
     {
       "question": "Describe the drug pipeline and clinical trials",
@@ -58,7 +69,8 @@
     {
       "question": "Are there any pending lawsuits?",
       "expect": "supported",
-      "why": "Legal proceedings are disclosed, including when the answer is 'none'."
+      "why": "Legal proceedings are disclosed, including when the answer is 'none'.",
+      "portable": true
     },
     {
       "question": "What stock exchange is the company listed on?",
@@ -66,39 +78,45 @@
       "expect_section_contains": "Market for Registrant",
       "section_known_gap": true,
       "why": "Disclosed on the cover page and in Item 5.",
-      "section_gap_reason": "Item 5 holds the literal sentence ('Our common stock is listed on the NASDAQ Capital Market'), but it lands at fusion rank 4-5: lexical rank 7, vector rank 13 at distance 0.593. Beneficial-ownership sections in the 10-K and proxy share the words 'stock' and 'listed' and outrank it. Neither a wider vector pool, a different BM25 length-normalization constant, nor per-section diversity moved it into the top 3 - all three were swept against this file and changed nothing. The answer is still supported and cited; only the section is wrong."
+      "section_gap_reason": "Item 5 holds the literal sentence ('Our common stock is listed on the NASDAQ Capital Market'), but it lands at fusion rank 4-5: lexical rank 7, vector rank 13 at distance 0.593. Beneficial-ownership sections in the 10-K and proxy share the words 'stock' and 'listed' and outrank it. Neither a wider vector pool, a different BM25 length-normalization constant, nor per-section diversity moved it into the top 3 - all three were swept against this file and changed nothing. The answer is still supported and cited; only the section is wrong.",
+      "portable": true
     },
     {
       "question": "Who audits the financial statements?",
       "expect": "supported",
-      "why": "The auditor's report names the firm."
+      "why": "The auditor's report names the firm.",
+      "portable": true
     },
     {
       "question": "Who serves on the board of directors?",
       "expect": "supported",
       "expect_section_contains": "CORPORATE GOVERNANCE",
       "form_hint": "DEF 14A",
-      "why": "Director biographies are a required proxy disclosure."
+      "why": "Director biographies are a required proxy disclosure.",
+      "portable": true
     },
     {
       "question": "Were there any related party transactions?",
       "expect": "supported",
       "expect_section_contains": "RELATED-PERSON TRANSACTIONS",
       "form_hint": "DEF 14A",
-      "why": "Item 404 disclosure, carried in the proxy."
+      "why": "Item 404 disclosure, carried in the proxy.",
+      "portable": true
     },
     {
       "question": "What is the company voting on at the annual meeting?",
       "expect": "supported",
       "form_hint": "DEF 14A",
-      "why": "The proxy exists to describe the proposals."
+      "why": "The proxy exists to describe the proposals.",
+      "portable": true
     },
     {
       "question": "What is the CEO annual salary?",
       "expect": "supported",
       "expect_section_contains": "EXECUTIVE COMPENSATION",
       "form_hint": "DEF 14A",
-      "why": "Summary Compensation Table states base salary by year."
+      "why": "Summary Compensation Table states base salary by year.",
+      "portable": true
     },
     {
       "question": "Did the company sell shares under an at-the-market program?",
@@ -108,27 +126,32 @@
     {
       "question": "What is the price of Bitcoin?",
       "expect": "abstain",
-      "why": "Wholly outside the filings; no term overlap at all."
+      "why": "Wholly outside the filings; no term overlap at all.",
+      "portable": true
     },
     {
       "question": "What was the weather in New York yesterday?",
       "expect": "abstain",
-      "why": "Off-topic, but shares tokens ('New York') with the address block."
+      "why": "Off-topic, but shares tokens ('New York') with the address block.",
+      "portable": true
     },
     {
       "question": "What is the companys carbon emissions target?",
       "expect": "abstain",
-      "why": "Plausible-sounding disclosure this company does not make."
+      "why": "Plausible-sounding disclosure this company does not make.",
+      "portable": true
     },
     {
       "question": "What is the target price set by analysts?",
       "expect": "abstain",
-      "why": "Analyst estimates are not a filing disclosure."
+      "why": "Analyst estimates are not a filing disclosure.",
+      "portable": true
     },
     {
       "question": "What is the CEO favourite restaurant?",
       "expect": "abstain",
-      "why": "Not the kind of fact a filing contains."
+      "why": "Not the kind of fact a filing contains.",
+      "portable": true
     },
     {
       "question": "What is the companys diversity hiring target?",
@@ -149,7 +172,8 @@
       "known_gap": true,
       "gap_class": "subject_mismatch",
       "why": "Not disclosed; only the corporate address is.",
-      "gap_reason": "An address is present in the filing, so retrieval cannot distinguish 'an address' from 'the CEO's home address'."
+      "gap_reason": "An address is present in the filing, so retrieval cannot distinguish 'an address' from 'the CEO's home address'.",
+      "portable": true
     },
     {
       "question": "When will the FDA approve NXP900?",
@@ -173,7 +197,8 @@
       "known_gap": true,
       "gap_class": "fact_not_stated",
       "why": "An earnings call transcript is not an SEC filing.",
-      "gap_reason": "The CEO is named throughout the proxy, so retrieval matches the person without any call transcript existing in the corpus."
+      "gap_reason": "The CEO is named throughout the proxy, so retrieval matches the person without any call transcript existing in the corpus.",
+      "portable": true
     },
     {
       "question": "How many employees were laid off last month?",
@@ -189,7 +214,8 @@
       "known_gap": true,
       "gap_class": "fact_not_stated",
       "why": "Absurd for a filing, but the company is headquartered in New Jersey.",
-      "gap_reason": "The state name appears in the address block and MD&A prose. That a question this obviously unanswerable still gets through is the clearest single argument for a reading step."
+      "gap_reason": "The state name appears in the address block and MD&A prose. That a question this obviously unanswerable still gets through is the clearest single argument for a reading step.",
+      "portable": true
     }
   ]
 }

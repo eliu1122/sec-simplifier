@@ -209,11 +209,28 @@ def main() -> None:
                         help="Retrieval only - no API calls, no cost.")
     parser.add_argument("--save-baseline", action="store_true",
                         help="Record this run as the baseline future runs compare against.")
+    parser.add_argument(
+        "--ticker",
+        help=(
+            "Score a different company using only the portable cases - those whose "
+            "expectation holds for any filer. Reveals whether thresholds generalize."
+        ),
+    )
     args = parser.parse_args()
 
     golden = json.loads(GOLDEN_SET_PATH.read_text(encoding="utf-8"))
-    cases = golden["cases"]
-    ticker = golden.get("corpus", {}).get("ticker")
+    home_ticker = golden.get("corpus", {}).get("ticker")
+    ticker = (args.ticker or home_ticker or "").upper()
+
+    if args.ticker and ticker != home_ticker:
+        # Company-specific expectations (this filer's drug, its section names)
+        # would be wrong against another company.
+        cases = [case for case in golden["cases"] if case.get("portable")]
+        if not cases:
+            raise SystemExit("No cases are marked portable.")
+    else:
+        cases = golden["cases"]
+
     corpus, generator = load_corpus_and_generator(not args.no_generate, ticker)
 
     if generator:
@@ -227,10 +244,13 @@ def main() -> None:
     stats = summarize(rows)
 
     baseline = None
-    if BASELINE_PATH.is_file():
+    if BASELINE_PATH.is_file() and ticker == home_ticker and len(cases) == len(golden["cases"]):
         baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
 
     report(rows, stats, baseline, mode)
+
+    if args.save_baseline and args.ticker and ticker != home_ticker:
+        raise SystemExit("Baselines are only recorded for the golden set's own company.")
 
     if args.save_baseline:
         BASELINE_PATH.write_text(

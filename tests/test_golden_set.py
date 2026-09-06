@@ -25,19 +25,30 @@ GOLDEN_SET_PATH = Path(__file__).parent / "golden_set.json"
 pytest.importorskip("chromadb")
 
 
-@pytest.fixture(scope="module")
-def indexed_corpus():
-    from src.vector_store import load_all_chunks
-
-    corpus = load_all_chunks()
-    if not corpus:
-        pytest.skip("vector store is empty - run `python -m src.build_index` first")
-    return corpus
+def _golden() -> dict:
+    return json.loads(GOLDEN_SET_PATH.read_text(encoding="utf-8"))
 
 
 def _cases():
-    data = json.loads(GOLDEN_SET_PATH.read_text(encoding="utf-8"))
-    return data["cases"]
+    return _golden()["cases"]
+
+
+TICKER = _golden().get("corpus", {}).get("ticker")
+
+
+@pytest.fixture(scope="module")
+def indexed_corpus():
+    """Only this golden set's own company.
+
+    Reading unscoped would score these cases against every company that happens
+    to be indexed, which is exactly what ticker scoping exists to prevent.
+    """
+    from src.vector_store import load_all_chunks
+
+    corpus = load_all_chunks(ticker=TICKER)
+    if not corpus:
+        pytest.skip(f"{TICKER} is not indexed - run `python -m src.build_index` first")
+    return corpus
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +70,10 @@ def _answer(question: str, corpus: list[dict], generator=None) -> dict:
     from src.vector_store import query_vector_store
 
     return answer_question(
-        question, corpus, query_vector_store(question, limit=10), generator=generator
+        question,
+        corpus,
+        query_vector_store(question, limit=10, ticker=TICKER),
+        generator=generator,
     )
 
 

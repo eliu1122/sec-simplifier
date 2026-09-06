@@ -1,9 +1,21 @@
 # SEC Simplifier — Build Progress
 
-Status of the six-week build as of **2026-09-03** (end of Week 4). The project is a single-company
-(ticker **NVCT**) grounded-Q&A MVP over EDGAR filings: it answers natural-language
-questions using filing text, shows the supporting excerpt and source link, and
-says *"I don't see this disclosed"* when the filings don't support an answer.
+Status as of **2026-09-06**. All six roadmap weeks are built, and the app has
+since been opened up from one hard-coded ticker to any US company searched on
+demand. It answers natural-language questions from a chosen company's EDGAR
+filings, shows the supporting excerpt and source link, and says *"I don't see
+this disclosed"* when the filings don't support an answer.
+
+**Two things are measured and worth knowing before reading further:**
+
+- Across three companies, recall is **100%** and every failure is a question that
+  should have been *declined*. Specificity ranges 25–62% depending on the
+  company — the retrieval thresholds do not generalize, and no distance floor
+  separates the two classes on two of the three. See
+  [the generalization finding](#what-a-second-company-revealed-the-thresholds-do-not-generalize-).
+- The Claude generation step — the only component that reads evidence rather
+  than scoring vocabulary, and so the only remaining mechanism that could fix
+  abstention — **has still never run.** There is no API key on this machine.
 
 - Detailed setup and run instructions: [README.md](README.md)
 - Active code lives in this folder (`sec-simplifier/`). `../edgar_copilot/` is a
@@ -544,9 +556,78 @@ without collisions. What actually had to change:
 `SEC_USER_AGENT` is now required to fetch anything; without it the app runs
 read-only over what is already indexed and says why.
 
-**Tests: 97** (up from 77). The ingestion flow is covered against a stubbed SEC
+**Tests: 98** (up from 77). The ingestion flow is covered against a stubbed SEC
 client — including the partial-download path — so none of it needs the network.
-The one thing not exercised offline is a real EDGAR fetch.
+
+### The live path works
+
+Three companies are now indexed from EDGAR through the app: NVCT (637 chunks),
+AAPL (753 chunks, 221 tables) and QURE (1,310 chunks). Apple's filings are far
+more table-heavy than NVCT's and the chunker handled them without changes.
+
+---
+
+## What a second company revealed: the thresholds do not generalize 🔴
+
+This is the most important measurement in the project, and it is a negative
+result.
+
+Nineteen of the 26 golden-set cases are marked `portable` — their expectation
+holds for any US filer, so they can be scored against any company with
+`python evaluate.py --ticker AAPL`. Run against all three, on the same 19
+questions:
+
+| Company | recall | specificity | overall |
+| --- | --- | --- | --- |
+| NVCT | 11/11 · **100%** | 5/8 · **62%** | 16/19 · 84% |
+| AAPL | 11/11 · **100%** | 2/8 · **25%** | 13/19 · 68% |
+| QURE | 11/11 · **100%** | 3/8 · **38%** | 14/19 · 74% |
+
+**Recall is perfect on every company. Specificity spans a 2.5× range on
+identical questions.** Everything the pipeline gets wrong, on every company, is
+a question it should have declined.
+
+### Why: there is no threshold that works
+
+Taking the best vector distance for each question:
+
+| | should-answer (max) | should-abstain (min) | separable? |
+| --- | --- | --- | --- |
+| NVCT | 0.583 | 0.620 | yes — a clean gap |
+| AAPL | 0.579 | **0.530** | **no — the ranges overlap** |
+| QURE | 0.593 | **0.537** | **no — the ranges overlap** |
+
+The should-*answer* range is stable across companies (~0.59 at the top). The
+should-*abstain* range is not: it collapses toward the answer range on larger,
+broader corpora. On NVCT the 0.60 floor sat neatly in a gap. On Apple there is
+no gap — an off-topic question like "what is the company's carbon emissions
+target?" lands at 0.530, closer than several questions that genuinely should be
+answered.
+
+The cause is corpus breadth, not corpus size alone. Apple's filings really do
+discuss environmental commitments, analyst expectations, and named executives at
+length, so a semantically near neighbour exists for almost anything. NVCT is a
+small clinical-stage pharma and simply has less surface area to match against.
+
+**The 0.60 floor was fit to NVCT.** Week 4 swept it against 26 NVCT questions and
+found it stable; that stability was a property of one company, not of the method.
+
+### What this means
+
+Retrieval thresholding cannot deliver abstention. Not "does not yet" — *cannot*,
+because on two of three companies the two classes are not linearly separable by
+distance at all. Lowering the floor to catch Apple's 0.530 abstains would throw
+away Apple's 0.579 legitimate answers.
+
+This is the strongest evidence in the project for why the Week 5 generation step
+exists. It stops being an enhancement and becomes the only remaining mechanism
+that could work, since it is the only component that reads the retrieved text
+rather than scoring its vocabulary. It is also still unrun.
+
+The three failures common to all companies — home address, earnings call,
+weather forecast — are the same `subject_mismatch` and `fact_not_stated` classes
+recorded in Week 6, now confirmed to be company-independent rather than quirks
+of one filer.
 
 ---
 
@@ -584,13 +665,14 @@ The one thing not exercised offline is a real EDGAR fetch.
 - **`period_of_report` backfill** — the existing `data/metadata` JSON predates the
   `reportDate` capture, so some filings fall back to the filing date until
   re-ingestion.
-- **A real EDGAR fetch has never run through the new path.** Ingestion is tested
-  against a stubbed client, so parsing, chunking and indexing are covered, but
-  the live download has only been exercised by the older CLI. Needs
-  `SEC_USER_AGENT` set and one company loaded to confirm.
-- **Retrieval thresholds were fit on one company.** The 0.60 distance floor and
-  60% coverage bar were swept against 26 NVCT questions. Loading a second company
-  is now cheap, and is the obvious way to find out whether they generalize.
+- **Abstention is the whole remaining problem.** Across three companies and 19
+  shared questions, recall is 100% and every single failure is a question that
+  should have been declined. Nothing is wrongly refused; plenty is wrongly
+  answered.
+- **Retrieval thresholds do not generalize - measured, not suspected.** The 0.60
+  distance floor was fit to NVCT. On AAPL and QURE the should-answer and
+  should-abstain distance ranges overlap, so no floor separates them. Specificity
+  falls from 62% to 25% on the same questions.
 - **No cross-company comparison.** Each answer is scoped to one company by
   design. Comparing two in a single answer needs period alignment and line-item
   reconciliation, which is its own project.
