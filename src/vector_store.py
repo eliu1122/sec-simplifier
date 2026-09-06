@@ -110,19 +110,31 @@ def build_vector_store(
     return collection.count()
 
 
+def _ticker_filter(ticker: str | None) -> dict[str, Any] | None:
+    """Chroma `where` clause scoping a read to one company, or None for all."""
+    return {"ticker": ticker.upper()} if ticker else None
+
+
 def query_vector_store(
     question: str,
     persist_dir: Path | str = DEFAULT_PERSIST_DIR,
     limit: int = 3,
+    ticker: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return the most similar chunks as plain dicts (metadata + text + distance)."""
+    """Return the most similar chunks as plain dicts (metadata + text + distance).
+
+    `ticker` scopes the search to one company. Without it a store holding several
+    companies would answer a question about one using another's filings.
+    """
     collection = get_collection(persist_dir)
     count = collection.count()
     if not question.strip() or count == 0:
         return []
 
     result = collection.query(
-        query_texts=[question], n_results=min(limit, count)
+        query_texts=[question],
+        n_results=min(limit, count),
+        where=_ticker_filter(ticker),
     )
     hits: list[dict[str, Any]] = []
     documents = result["documents"][0]
@@ -136,24 +148,59 @@ def query_vector_store(
     return hits
 
 
-def load_all_chunks(persist_dir: Path | str = DEFAULT_PERSIST_DIR) -> list[dict[str, Any]]:
-    """Return every persisted chunk as a plain dict.
+def load_all_chunks(
+    persist_dir: Path | str = DEFAULT_PERSIST_DIR, ticker: str | None = None
+) -> list[dict[str, Any]]:
+    """Return persisted chunks as plain dicts, optionally for one company only.
 
     The lexical half of hybrid retrieval scores the whole corpus, so it reads
     from the store too - that way the index is the single source of truth and
-    the app never re-parses filing HTML to answer a question.
+    the app never re-parses filing HTML to answer a question. Pass `ticker` to
+    scope it; the lexical scorer has no metadata filter of its own, so this is
+    where company scoping happens for that half.
     """
     collection = get_collection(persist_dir)
     if collection.count() == 0:
         return []
 
-    rows = collection.get(include=["documents", "metadatas"])
+    rows = collection.get(include=["documents", "metadatas"], where=_ticker_filter(ticker))
     chunks: list[dict[str, Any]] = []
     for document, metadata in zip(rows["documents"], rows["metadatas"]):
         chunk = dict(metadata)
         chunk["text"] = document
         chunks.append(chunk)
     return chunks
+
+
+def indexed_companies(persist_dir: Path | str = DEFAULT_PERSIST_DIR) -> dict[str, dict[str, Any]]:
+    """What is already indexed, keyed by ticker.
+
+    Used to decide whether a searched company needs ingesting, and to populate
+    the picker in the UI.
+    """
+    collection = get_collection(persist_dir)
+    if collection.count() == 0:
+        return {}
+
+    rows = collection.get(include=["metadatas"])
+    companies: dict[str, dict[str, Any]] = {}
+    for metadata in rows["metadatas"]:
+        ticker = metadata.get("ticker")
+        if not ticker:
+            continue
+        entry = companies.setdefault(
+            ticker, {"ticker": ticker, "chunks": 0, "filings": set(), "forms": set()}
+        )
+        entry["chunks"] += 1
+        if metadata.get("accession_number"):
+            entry["filings"].add(metadata["accession_number"])
+        if metadata.get("form"):
+            entry["forms"].add(metadata["form"])
+
+    for entry in companies.values():
+        entry["filings"] = len(entry["filings"])
+        entry["forms"] = sorted(entry["forms"])
+    return companies
 
 
 def store_stats(persist_dir: Path | str = DEFAULT_PERSIST_DIR) -> dict[str, Any]:

@@ -35,19 +35,40 @@ def wrap(text: str, indent: str = "  ") -> str:
     return textwrap.fill(text, width=WIDTH, initial_indent=indent, subsequent_indent=indent)
 
 
-def load_everything(use_generator: bool):
+def resolve_ticker(requested: str | None) -> str:
+    """Pick the company to ask about, or explain the choices."""
+    from src.vector_store import indexed_companies
+
+    available = indexed_companies()
+    if not available:
+        raise SystemExit(
+            "The vector store is empty. Load a company first:\n"
+            "  python -m src.ingest_filings --ticker NVCT --user-agent \"Name email\"\n"
+            "  python -m src.build_index --reset"
+        )
+    if requested:
+        ticker = requested.upper()
+        if ticker not in available:
+            raise SystemExit(
+                f"{ticker} is not indexed. Available: {', '.join(sorted(available))}"
+            )
+        return ticker
+    if len(available) == 1:
+        return next(iter(available))
+    raise SystemExit(
+        f"Several companies are indexed - pass --ticker. Available: {', '.join(sorted(available))}"
+    )
+
+
+def load_everything(use_generator: bool, ticker: str):
     try:
         from src.vector_store import load_all_chunks
     except ImportError:
         raise SystemExit("Install dependencies first:  pip install -r requirements.txt")
 
-    corpus = load_all_chunks()
+    corpus = load_all_chunks(ticker=ticker)
     if not corpus:
-        raise SystemExit(
-            "The vector store is empty. Build it first:\n"
-            "  python -m src.ingest_filings --ticker NVCT --user-agent \"Name email\"\n"
-            "  python -m src.build_index --reset"
-        )
+        raise SystemExit(f"No indexed chunks for {ticker}.")
 
     generator = None
     if use_generator:
@@ -58,11 +79,11 @@ def load_everything(use_generator: bool):
     return corpus, generator
 
 
-def ask(question: str, corpus: list[dict], generator) -> None:
+def ask(question: str, corpus: list[dict], generator, ticker: str = "") -> None:
     from src.grounded_qa import retrieve_hybrid
     from src.vector_store import query_vector_store
 
-    vector_hits = query_vector_store(question, limit=VECTOR_CANDIDATES)
+    vector_hits = query_vector_store(question, limit=VECTOR_CANDIDATES, ticker=ticker or None)
 
     print()
     print("=" * WIDTH)
@@ -127,10 +148,14 @@ def ask(question: str, corpus: list[dict], generator) -> None:
         )
         print()
         print("-" * WIDTH)
-        print(
+        line = (
             f"  {usage.get('input_tokens', 0):,} in / {usage.get('output_tokens', 0):,} out "
             f"tokens on {usage.get('model', '?')} - about ${cost:.4f}"
         )
+        cached = usage.get("cache_read_tokens", 0)
+        if cached:
+            line += f"  ({cached:,} read from cache)"
+        print(line)
     print()
 
 
@@ -142,12 +167,17 @@ def main() -> None:
         action="store_true",
         help="Retrieval only - no API call, no cost.",
     )
+    parser.add_argument(
+        "--ticker",
+        help="Company to ask about. Optional when only one is indexed.",
+    )
     args = parser.parse_args()
 
-    corpus, generator = load_everything(not args.no_generate)
+    ticker = resolve_ticker(args.ticker)
+    corpus, generator = load_everything(not args.no_generate, ticker)
 
     tables = sum(1 for c in corpus if c.get("chunk_type") == "table")
-    print(f"Corpus: {len(corpus)} chunks ({tables} tables) from local EDGAR filings")
+    print(f"Company: {ticker} - {len(corpus)} chunks ({tables} tables) from local EDGAR filings")
     if generator:
         from src.generate import DEFAULT_MODEL
 
@@ -158,7 +188,7 @@ def main() -> None:
         print("Answers: excerpted - set ANTHROPIC_API_KEY to have Claude write them")
 
     if args.question:
-        ask(" ".join(args.question), corpus, generator)
+        ask(" ".join(args.question), corpus, generator, ticker)
         return
 
     print("\nType a question, or blank to quit.")
@@ -171,7 +201,7 @@ def main() -> None:
         if not question:
             return
         try:
-            ask(question, corpus, generator)
+            ask(question, corpus, generator, ticker)
         except Exception as error:  # keep the session alive on a bad call
             print(f"\n  Failed: {error}")
 

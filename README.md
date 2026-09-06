@@ -1,23 +1,27 @@
-# SEC Simplifier — Single-Company Due-Diligence MVP
+# SEC Simplifier — Grounded Due Diligence on SEC Filings
 
-This project is intentionally scoped to a single company, single session.
-The goal is to answer natural-language questions using filing text that is
-actually grounded in EDGAR documents, with visible citations and explicit
-"I don't see this disclosed" behavior when a claim is unsupported.
+Search any US public company, ask questions in plain English, and get answers
+built only from that company's EDGAR filings — with visible citations and an
+explicit "I don't see this disclosed" when a claim is unsupported.
+
+Each question is answered within one company: type a ticker, the app downloads
+and indexes its recent filings, and every answer is scoped to them.
 
 ## Scope
 
-- One ticker only: NVCT
-- Recent 10-K / 10-Q / 8-K / DEF 14A filings
+- **Any US company with a ticker in EDGAR's mapping** - searched and indexed on demand
+- Recent 10-K / 10-Q / 8-K / DEF 14A filings, two of each per company
 - Local ingestion and metadata capture
-- Section-aware chunking from filing HTML
-- grounded answers with citation back to the filing section
-- honest failure when the answer is not disclosed
+- Section- and table-aware chunking from filing HTML
+- Grounded answers with citation back to the filing section
+- Honest failure when the answer is not disclosed
 
-This cuts out:
+Every question is scoped to one company. This still cuts out:
 
-- multi-company comparison
-- broad ticker coverage
+- multi-company **comparison** in a single answer (period alignment and
+  line-item reconciliation are their own problem)
+- foreign private issuers, funds, and anything without a ticker in
+  `company_tickers.json`
 - automated alerts on new filings
 - heavy orchestration or generic RAG framework complexity
 
@@ -32,10 +36,13 @@ The repo now has a minimal working MVP around the grounded Q&A loop:
 - [src/corpus.py](src/corpus.py): turns downloaded filings into chunks with full metadata
 - [src/vector_store.py](src/vector_store.py): persists chunks and metadata in a local Chroma store
 - [src/build_index.py](src/build_index.py): CLI that builds or refreshes the vector index
+- [src/company.py](src/company.py): resolves a ticker and ingests it on demand, with progress reporting
 - [src/generate.py](src/generate.py): Claude writes the answer from retrieved evidence, with every quote verified
+- [evaluate.py](evaluate.py): scores the pipeline against the reviewed golden set, with baseline tracking
 - [tests/test_grounded_qa.py](tests/test_grounded_qa.py): chunking, retrieval, grounding, and vector-store contract tests
 - [tests/test_generate.py](tests/test_generate.py): quote verification and generation wiring, all offline
-- [tests/golden_set.json](tests/golden_set.json): reviewed evaluation cases, with known gaps recorded explicitly
+- [tests/golden_set.json](tests/golden_set.json): 26 reviewed evaluation cases, with known gaps classified and explained
+- [tests/test_evaluate.py](tests/test_evaluate.py): the scoring harness's own arithmetic, and golden-set hygiene
 
 ## Six-week build roadmap
 
@@ -49,29 +56,77 @@ account of what is built, what is pending, and the known weaknesses.
 | 3 | Vector store and metadata | Persist chunks and metadata in Chroma, with a stable chunk ID, filing accession number, section, period, and source URL. | Complete - `src/build_index.py` writes a persistent Chroma store; every chunk carries a stable ID and full filing metadata. |
 | 4 | Hybrid retrieval | Combine lexical/keyword search with vector similarity search, then rerank the strongest evidence chunks. | Complete - table-aware chunking, BM25 + vector search fused with reciprocal rank fusion, two-gate abstention. Live in the app. |
 | 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Built - structured output, verified quotes, abstention. **Live path unrun: needs an `ANTHROPIC_API_KEY`.** |
-| 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Baseline started - UI evidence cards, and a 13-case golden set scoring 11/13. |
+| 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Complete - `evaluate.py` scores a 26-case set against a tracked baseline. 19/26 in extractive mode. |
 
 ### Current position
 
-The project is at the end of **Week 5**. The full pipeline exists: hybrid
-retrieval over the Chroma index feeds a Claude call that writes the answer from
-the retrieved evidence, and every quote it returns is checked against the source
-before it is shown.
+All six weeks are built. The pipeline runs end to end: hybrid retrieval over the
+Chroma index feeds a Claude call that writes the answer from the retrieved
+evidence, every quote is checked against the source before it is shown, and
+`evaluate.py` scores the whole thing against 26 reviewed cases with a tracked
+baseline.
+
+**Measured, in extractive mode: 19/26.** Recall is perfect (13/13 — it answers
+everything it should) and specificity is 46% (6/13 — it declines less than half
+of what it should). Every failure is a question it should have refused.
 
 **The generation path has not been run against the live API.** There is no
 `ANTHROPIC_API_KEY` on this machine, so it is unit-tested against fakes and stub
-clients only. Without credentials the app behaves exactly as it did in Week 4 —
-extractive answers — and says so in the status line.
+clients only, and every number above is retrieval-only. Without credentials the
+app behaves exactly as it did in Week 4 and says so in the status line.
 
-### Still open (carried into Week 6)
+Since the roadmap finished, the app has been opened up from one hard-coded
+company to **any ticker searched on demand** — see below.
 
-- Run the generation path for real and see whether it closes the two known
-  golden-set gaps. See [PROGRESS.md](PROGRESS.md) for how.
+### Still open
+
+- Run generation for real and record a second baseline. All seven open gaps are
+  exactly the shape it was built to close.
 - Quote verification proves a quote is genuine, not that it supports the claim
-  built on it. That is Week 6's "support" metric.
-- Retrieval thresholds are tuned against 13 cases; the golden set needs to grow
-  before they can be trusted at scale.
-- No prompt caching yet, so every answered question pays full input cost.
+  built on it. Measuring that needs a judge.
+- 26 cases on one filer is a small basis for the retrieval thresholds. Now that
+  more companies can be loaded, that basis can grow.
+
+## Searching any company
+
+Type a ticker and the app resolves it against EDGAR, downloads its two most
+recent 10-K, 10-Q, 8-K and DEF 14A filings, chunks them, and indexes them —
+about 30–90 seconds, with a progress bar. It is then a company you can pick from
+the dropdown, and everything is on disk for next time.
+
+**Set your SEC User-Agent first.** The SEC requires requests to identify who is
+making them, so the app refuses to fetch anything without it:
+
+```powershell
+$env:SEC_USER_AGENT = "Your Name your-email@example.com"
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\app.py
+```
+
+Without it the app still runs and answers questions about companies already
+indexed; the Add button is just disabled, with the reason shown.
+
+### How scoping works
+
+Every read is filtered by ticker, in both halves of retrieval:
+
+- the vector query passes `where={"ticker": ...}` to Chroma
+- the lexical scorer is handed only that company's chunks
+
+That matters for more than tidiness. BM25 judges how rare a term is *within the
+corpus it is given* — so scoping also keeps "rare" meaning rare **in this
+company's filings**, rather than across every company you happen to have loaded.
+
+The CLIs take `--ticker` too, and pick the company automatically when only one is
+indexed. `evaluate.py` and `run_demo.py` scope themselves to the ticker recorded
+in the golden set, so scores stay comparable as you add companies.
+
+### What "any company" does not cover
+
+EDGAR's `company_tickers.json` is the lookup, which means US filers with a listed
+symbol. Foreign private issuers filing 20-F, most funds, and private companies
+will not resolve — the app says so rather than returning nothing.
+
+Each company costs roughly 640 chunks and a few MB of raw HTML on disk.
 
 ## Week 2: retrieval and grounding baseline
 
@@ -202,6 +257,31 @@ generation even when a key is present.
 > with injected fakes and a stub client — see [PROGRESS.md](PROGRESS.md) for what
 > is and is not tested, and how to check it.
 
+## Week 6: evaluation, and what it found
+
+Building the evaluation set surfaced a silent data-loss bug. The chunker
+recognized only `Item N.` headings — and a proxy statement contains none. Both
+DEF 14A filings had been falling through to a whole-document fallback that
+truncated at 2,000 characters:
+
+| | before | after |
+| --- | --- | --- |
+| DEF 14A chunks | 2 | 110 |
+| DEF 14A text indexed | ~2% | all of it |
+| corpus total | 529 | 637 |
+
+Executive compensation, director biographies, auditor fees and related-party
+transactions all live in the proxy, so none of them had been reachable. The fix
+falls back to the proxy's ALL-CAPS headings when no `Item` heading is found. It
+is a fallback, so it cannot fragment a 10-K on an all-caps table caption — the
+10-K and 10-Q chunk counts are unchanged to the chunk.
+
+Adding the proxy also caused a regression, which the harness caught on the next
+run: one question stopped citing the section it should. Three candidate fixes
+were swept against the whole set before concluding, and none changed any metric,
+so it is recorded as a known ranking gap with the diagnosis rather than tuned
+around. [PROGRESS.md](PROGRESS.md) has the numbers.
+
 ## Install dependencies
 
 ```powershell
@@ -238,10 +318,10 @@ cd "C:\Users\yceri\Desktop\SEC Simplifier\sec-simplifier"
 & "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" -m pytest -q
 ```
 
-53 tests: contract tests in `tests/test_grounded_qa.py`, generation and
-quote-verification tests in `tests/test_generate.py`, plus the reviewed
-evaluation cases in [tests/golden_set.json](tests/golden_set.json) run by
-`tests/test_golden_set.py`. The golden-set tests skip cleanly until the index has
+77 tests: contract tests in `tests/test_grounded_qa.py`, generation and
+quote-verification tests in `tests/test_generate.py`, scoring-harness tests in
+`tests/test_evaluate.py`, plus the reviewed evaluation cases in
+[tests/golden_set.json](tests/golden_set.json) run by `tests/test_golden_set.py`. The golden-set tests skip cleanly until the index has
 been built with `python -m src.build_index`.
 
 None of these call the Claude API. With `ANTHROPIC_API_KEY` set, the golden-set
@@ -285,6 +365,42 @@ middle of a 500-character excerpt.
 
 If a quote the model returns is not found in the evidence it cited, it appears
 under `REJECTED QUOTE(S)` and does not count toward the answer.
+
+## Score the pipeline
+
+`evaluate.py` runs the 26 reviewed cases in
+[tests/golden_set.json](tests/golden_set.json) and reports how well the system
+answers, cites, and declines.
+
+```powershell
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\evaluate.py
+```
+
+```
+ANSWER RATE
+  answered when it should     13/13     100%
+  declined when it should      6/13      46%
+  overall                     19/26      73%
+
+CITATIONS
+  answers that cite anything  20/20     100%
+  cited the expected section   4/5       80%
+```
+
+Answering and declining are reported separately because they fail
+independently - and here they fail very differently. The system answers
+everything it should; it declines less than half of what it should. All seven
+failures are questions it should have refused, each recorded in the golden set
+with a diagnosis and a class:
+
+- `subject_mismatch` - the evidence is about a different company or person
+  ("How many patents does Apple hold?").
+- `fact_not_stated` - the evidence is on-topic but the figure is absent
+  ("How much did the company spend on advertising?").
+
+`--save-baseline` records a run to `tests/eval_baseline.json`; later runs print
+the delta, so a change that helps one metric and quietly costs another shows up.
+`--no-generate` scores retrieval only, with no API cost.
 
 ## Run the full comparison
 

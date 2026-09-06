@@ -62,8 +62,8 @@ class SecClient:
         time.sleep(REQUEST_DELAY_SECONDS)
         return resp
 
-    def get_cik_for_ticker(self, ticker: str) -> str:
-        """Return a 10-digit, zero-padded CIK string for a given ticker."""
+    def _ticker_entry(self, ticker: str) -> dict:
+        """Look one ticker up in EDGAR's ticker/CIK/name mapping."""
         if self._ticker_map_cache is None:
             resp = self._get(TICKER_MAP_URL)
             self._ticker_map_cache = resp.json()  # {"0": {"cik_str": ..., "ticker": ..., "title": ...}, ...}
@@ -71,9 +71,17 @@ class SecClient:
         ticker_upper = ticker.upper()
         for entry in self._ticker_map_cache.values():
             if entry["ticker"].upper() == ticker_upper:
-                return str(entry["cik_str"]).zfill(10)
+                return entry
 
         raise ValueError(f"Ticker '{ticker}' not found in SEC company_tickers.json")
+
+    def get_cik_for_ticker(self, ticker: str) -> str:
+        """Return a 10-digit, zero-padded CIK string for a given ticker."""
+        return str(self._ticker_entry(ticker)["cik_str"]).zfill(10)
+
+    def company_name_for_ticker(self, ticker: str) -> str:
+        """Registrant name as EDGAR spells it, for labelling the UI."""
+        return self._ticker_entry(ticker).get("title") or ticker.upper()
 
     def get_filings(
         self,

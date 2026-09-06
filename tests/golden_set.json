@@ -4,19 +4,26 @@
     "whether the filings should support an answer, and - where it is unambiguous -",
     "the filing section the evidence ought to come from.",
     "",
-    "'known_gap' marks a case the current pipeline gets wrong for a reason we",
-    "understand. These are targets, not noise: they are expected to be fixed by",
-    "Week 5 (Claude reading the retrieved evidence), not by tuning retrieval",
-    "thresholds until these ten questions happen to pass.",
+    "'known_gap' marks a case the pipeline gets wrong for a reason we understand,",
+    "with 'gap_class' naming the reason. These are targets, not noise: they are",
+    "expected to be closed by the model reading the evidence (Week 5), not by",
+    "tuning retrieval thresholds until these questions happen to pass.",
     "",
-    "Week 6 turns this into scored metrics: citation correctness, support, and",
-    "abstention quality. For now tests/test_golden_set.py asserts only the",
-    "supported/abstain contract on non-gap cases."
+    "  subject_mismatch - the evidence is about a different company, person, or",
+    "    kind of thing than the question asks about.",
+    "  fact_not_stated  - the evidence is on-topic but does not state the specific",
+    "    figure, date, or event asked for.",
+    "",
+    "Both classes share a shape: retrieval finds text that genuinely matches the",
+    "question's words. No distance floor or coverage bar separates them, because",
+    "the mismatch is in meaning, not vocabulary.",
+    "",
+    "Score this file with `python evaluate.py`."
   ],
   "corpus": {
     "ticker": "NVCT",
     "forms": ["10-K", "10-Q", "8-K", "DEF 14A"],
-    "note": "Two most recent filings per form, ingested 2026-09-03."
+    "note": "Two most recent filings per form, ingested 2026-09-03; 637 chunks."
   },
   "cases": [
     {
@@ -35,8 +42,7 @@
     {
       "question": "Who are the executive officers and what are they paid?",
       "expect": "supported",
-      "expect_section_contains": "Executive Compensation",
-      "why": "Should reach the compensation tables, not just prose."
+      "why": "Compensation tables appear in both the 10-K and the proxy."
     },
     {
       "question": "Has the company ever made a profit?",
@@ -58,12 +64,46 @@
       "question": "What stock exchange is the company listed on?",
       "expect": "supported",
       "expect_section_contains": "Market for Registrant",
-      "why": "Disclosed on the cover page and in Item 5."
+      "section_known_gap": true,
+      "why": "Disclosed on the cover page and in Item 5.",
+      "section_gap_reason": "Item 5 holds the literal sentence ('Our common stock is listed on the NASDAQ Capital Market'), but it lands at fusion rank 4-5: lexical rank 7, vector rank 13 at distance 0.593. Beneficial-ownership sections in the 10-K and proxy share the words 'stock' and 'listed' and outrank it. Neither a wider vector pool, a different BM25 length-normalization constant, nor per-section diversity moved it into the top 3 - all three were swept against this file and changed nothing. The answer is still supported and cited; only the section is wrong."
     },
     {
       "question": "Who audits the financial statements?",
       "expect": "supported",
       "why": "The auditor's report names the firm."
+    },
+    {
+      "question": "Who serves on the board of directors?",
+      "expect": "supported",
+      "expect_section_contains": "CORPORATE GOVERNANCE",
+      "form_hint": "DEF 14A",
+      "why": "Director biographies are a required proxy disclosure."
+    },
+    {
+      "question": "Were there any related party transactions?",
+      "expect": "supported",
+      "expect_section_contains": "RELATED-PERSON TRANSACTIONS",
+      "form_hint": "DEF 14A",
+      "why": "Item 404 disclosure, carried in the proxy."
+    },
+    {
+      "question": "What is the company voting on at the annual meeting?",
+      "expect": "supported",
+      "form_hint": "DEF 14A",
+      "why": "The proxy exists to describe the proposals."
+    },
+    {
+      "question": "What is the CEO annual salary?",
+      "expect": "supported",
+      "expect_section_contains": "EXECUTIVE COMPENSATION",
+      "form_hint": "DEF 14A",
+      "why": "Summary Compensation Table states base salary by year."
+    },
+    {
+      "question": "Did the company sell shares under an at-the-market program?",
+      "expect": "supported",
+      "why": "The ATM program is described in the 10-K, the 10-Q, and an 8-K."
     },
     {
       "question": "What is the price of Bitcoin?",
@@ -81,18 +121,75 @@
       "why": "Plausible-sounding disclosure this company does not make."
     },
     {
+      "question": "What is the target price set by analysts?",
+      "expect": "abstain",
+      "why": "Analyst estimates are not a filing disclosure."
+    },
+    {
+      "question": "What is the CEO favourite restaurant?",
+      "expect": "abstain",
+      "why": "Not the kind of fact a filing contains."
+    },
+    {
+      "question": "What is the companys diversity hiring target?",
+      "expect": "abstain",
+      "why": "This company sets no such target in these filings."
+    },
+    {
       "question": "How many patents does Apple hold?",
       "expect": "abstain",
       "known_gap": true,
+      "gap_class": "subject_mismatch",
       "why": "About a different company.",
-      "gap_reason": "The filings do discuss patents, so retrieval finds real, on-topic-looking evidence. Nothing at the retrieval layer knows 'Apple' is not this registrant. Week 5: the generator reads the evidence and should refuse."
+      "gap_reason": "The filings do discuss patents, so retrieval finds real, on-topic-looking evidence. Nothing at the retrieval layer knows 'Apple' is not this registrant."
     },
     {
       "question": "What is the CEO home address?",
       "expect": "abstain",
       "known_gap": true,
+      "gap_class": "subject_mismatch",
       "why": "Not disclosed; only the corporate address is.",
-      "gap_reason": "An address is present in the filing, so retrieval cannot distinguish 'an address' from 'the CEO's home address'. Week 5: the generator must see the retrieved text is a corporate address and abstain."
+      "gap_reason": "An address is present in the filing, so retrieval cannot distinguish 'an address' from 'the CEO's home address'."
+    },
+    {
+      "question": "When will the FDA approve NXP900?",
+      "expect": "abstain",
+      "known_gap": true,
+      "gap_class": "fact_not_stated",
+      "why": "No approval date exists or is disclosed; the drug is in trials.",
+      "gap_reason": "Risk Factors discuss FDA approval at length without stating any date. Retrieval sees a dense topical match and cannot tell that the specific fact is absent."
+    },
+    {
+      "question": "How much did the company spend on advertising?",
+      "expect": "abstain",
+      "known_gap": true,
+      "gap_class": "fact_not_stated",
+      "why": "Advertising is not a broken-out expense line for this filer.",
+      "gap_reason": "MD&A discusses expenses in detail, so retrieval matches on 'spend' and 'company' without any advertising figure being present."
+    },
+    {
+      "question": "What did the CEO say on the earnings call?",
+      "expect": "abstain",
+      "known_gap": true,
+      "gap_class": "fact_not_stated",
+      "why": "An earnings call transcript is not an SEC filing.",
+      "gap_reason": "The CEO is named throughout the proxy, so retrieval matches the person without any call transcript existing in the corpus."
+    },
+    {
+      "question": "How many employees were laid off last month?",
+      "expect": "abstain",
+      "known_gap": true,
+      "gap_class": "fact_not_stated",
+      "why": "No layoffs are disclosed, and 'last month' is not a filing period.",
+      "gap_reason": "Headcount and personnel costs appear in MD&A, which is topically close enough for retrieval to accept."
+    },
+    {
+      "question": "What is the weather forecast for New Jersey?",
+      "expect": "abstain",
+      "known_gap": true,
+      "gap_class": "fact_not_stated",
+      "why": "Absurd for a filing, but the company is headquartered in New Jersey.",
+      "gap_reason": "The state name appears in the address block and MD&A prose. That a question this obviously unanswerable still gets through is the clearest single argument for a reading step."
     }
   ]
 }

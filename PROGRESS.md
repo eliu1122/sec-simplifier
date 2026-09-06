@@ -20,7 +20,7 @@ flowchart TD
     C["<b>3 · Vector store &amp; metadata</b><br/>Chroma · stable chunk IDs<br/>per-filing citation metadata"]
     D["<b>4 · Hybrid retrieval</b><br/>BM25 + vector search, RRF fusion<br/>two gates guard abstention"]
     E["<b>5 · Claude orchestration</b><br/>writes the answer from the evidence<br/>every quote verified against source"]
-    F["<b>6 · Cited answer</b><br/>quotes the source filing<br/>or flags the disclosure gap"]
+    F["<b>6 · Cited answer + evaluation</b><br/>quotes the filing or flags the gap<br/>scored against 26 reviewed cases"]
 
     A --> B --> C --> D --> E --> F
 
@@ -28,8 +28,8 @@ flowchart TD
     classDef partial fill:#fff7e0,stroke:#9a6b00,color:#5a3d00;
     classDef planned fill:#eef2ff,stroke:#3f51b5,color:#22307a;
 
-    class A,B,C,D done;
-    class E,F partial;
+    class A,B,C,D,F done;
+    class E partial;
 ```
 
 **Legend** — 🟢 done · 🟡 partial (baseline in place, work remaining) · 🔵 planned
@@ -37,11 +37,11 @@ flowchart TD
 | Stage | State | Where |
 | --- | --- | --- |
 | 1 · SEC EDGAR filings | 🟢 done | [src/sec_client.py](src/sec_client.py), [src/ingest_filings.py](src/ingest_filings.py) |
-| 2 · Ingestion & chunking | 🟢 done | [src/grounded_qa.py](src/grounded_qa.py), [src/tables.py](src/tables.py), [src/corpus.py](src/corpus.py) |
+| 2 · Ingestion & chunking | 🟢 done — incl. proxy statements | [src/grounded_qa.py](src/grounded_qa.py), [src/tables.py](src/tables.py), [src/corpus.py](src/corpus.py) |
 | 3 · Vector store & metadata | 🟢 done | [src/vector_store.py](src/vector_store.py), [src/build_index.py](src/build_index.py) |
 | 4 · Hybrid retrieval | 🟢 done | [src/grounded_qa.py](src/grounded_qa.py), [app.py](app.py) |
 | 5 · Grounded generation (Claude) | 🟡 built and unit-tested; **live path unrun — needs an API key** | [src/generate.py](src/generate.py) |
-| 6 · Cited answers & evaluation | 🟡 UI + abstention live; golden set scaffolded, scoring pending | [tests/golden_set.json](tests/golden_set.json) |
+| 6 · Cited answers & evaluation | 🟢 scored 19/26 in extractive mode, with a tracked baseline | [evaluate.py](evaluate.py), [tests/golden_set.json](tests/golden_set.json) |
 
 ---
 
@@ -360,24 +360,193 @@ Expect real cost: 13 golden-set cases × ~2-4K input tokens each on Opus 5.
 
 ---
 
+## Week 6 — Evaluation 🟢
+
+**Goal:** turn the golden set from a pass/fail contract into measured metrics,
+and see what the measurement says.
+
+### The harness ([evaluate.py](evaluate.py))
+
+```powershell
+& "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\evaluate.py
+```
+
+Three metric groups, because they fail independently:
+
+- **Answer rate** — split into *answered when it should* and *declined when it
+  should*. A single accuracy number hides the asymmetry, and the asymmetry is
+  the whole story here.
+- **Citations** — does an answer cite anything, and does it cite the section a
+  reviewer said it should?
+- **Grounding** — how many quotes were rejected as not present in the evidence.
+  Only meaningful in generation mode; extractive answers quote the chunk
+  directly.
+
+`--save-baseline` records a run to [tests/eval_baseline.json](tests/eval_baseline.json);
+every later run prints the delta, so a change that helps one metric and quietly
+costs another is visible.
+
+### Current score
+
+```
+ANSWER RATE
+  answered when it should     13/13     100%
+  declined when it should      6/13      46%
+  overall                     19/26      73%
+
+CITATIONS
+  answers that cite anything  20/20     100%
+  cited the expected section   4/5       80%
+```
+
+**Recall is perfect and specificity is 46%.** The system answers everything it
+should and declines less than half of what it should. Every one of the seven
+failures is a question that should have been declined — there are no cases where
+it wrongly refused.
+
+### The golden set, 13 → 26 cases
+
+Grown to cover the 10-Q and DEF 14A deliberately, and to include *hard
+negatives* — questions where retrieval finds genuinely on-topic text that does
+not contain the fact. Failures are classified:
+
+| Class | Meaning | Cases |
+| --- | --- | --- |
+| `subject_mismatch` | Evidence about a different company, person, or kind of thing | 2 |
+| `fact_not_stated` | Evidence on-topic, but the specific figure/date/event is absent | 5 |
+
+The starkest is *"What is the weather forecast for New Jersey?"* — answered,
+because the company is headquartered in New Jersey and the state name appears
+throughout. That a question this obviously unanswerable still gets through is the
+clearest single argument for a reading step.
+
+Adding these deliberately **lowered** the score from the Week 4 headline. That is
+the point: the earlier number was flattered by an easy set.
+
+### What evaluation found: 98% of both proxy statements was being discarded
+
+Building the DEF 14A cases surfaced a silent data-loss bug. `build_chunks_from_html`
+recognized only `Item N.` headings — and a proxy statement contains **none**. Both
+DEF 14A filings fell through to the whole-document fallback, which truncated at
+2,000 characters:
+
+| | before | after |
+| --- | --- | --- |
+| DEF 14A chunks | 2 | 110 |
+| DEF 14A text indexed | ~4 KB of ~212 KB (2%) | all of it |
+| corpus total | 529 | 637 |
+
+Fixed by falling back to the proxy's ALL-CAPS headings (`EXECUTIVE COMPENSATION`,
+`REPORT OF THE AUDIT COMMITTEE`) when no Item heading is found, and by windowing
+the last-resort fallback instead of truncating it. The rule is a *fallback*, so it
+cannot fragment a 10-K on an all-caps table caption — 10-K and 10-Q chunk counts
+are unchanged to the chunk.
+
+This matters beyond tidiness: executive compensation, director biographies,
+auditor fees and related-party transactions live in the proxy. Before this, the
+system could not see any of them.
+
+### A regression the harness caught immediately
+
+Adding 110 proxy chunks broke a case that previously passed: *"What stock
+exchange is the company listed on?"* stopped citing `Item 5. Market for
+Registrant`. Diagnosis:
+
+- The correct chunk holds the literal sentence and still passes both gates.
+- It lands at **lexical rank 7** and **vector rank 13** (distance 0.593), fusing
+  to **rank 4** — one slot below the cut.
+- Beneficial-ownership sections in the 10-K and proxy share the words "stock"
+  and "listed" and outrank it.
+
+Three fixes were swept against the whole set before concluding: the BM25
+length-normalization constant across `0.0–1.0`, the vector candidate pool across
+`5–80`, and per-section diversity. **None changed any metric.** So it is recorded
+as a `section_known_gap` with the diagnosis, not tuned around — the same
+discipline as Week 4. The answer is still correct and cited; only the section is
+wrong.
+
+### Also in Week 6
+
+- **Evidence diversity** — at most two chunks from any one section, so one
+  mislabelled heading cannot own every evidence slot. Honestly: this changed no
+  measured metric on this set. It is kept because three passages from one
+  section make one point, which the current metrics do not capture.
+- **Prompt caching** — the system prompt is identical on every request and
+  renders before the evidence, so it carries a cache breakpoint (~700 tokens,
+  above Opus 5's 512-token minimum). `cache_read_tokens` is reported back;
+  zero across repeated questions means it is not caching.
+- **UI** — evidence cards now label each passage *Verified quote* or *Filing
+  excerpt*, so a reader can tell which guarantee they have.
+
+**Tests: 77 passing** (up from 53), including the harness's own arithmetic — the
+project's claims about itself rest on that code, so it is tested rather than
+trusted.
+
+### Still unrun
+
+Everything above is measured in **extractive mode**. The generation path still
+has no API key behind it, so the seven open gaps have never been shown to Claude.
+All seven are exactly the shape Week 5 was built for.
+
+---
+
 ## Future work
 
-### Week 6 — Cited answers and evaluation 🟡
+### Week 6 remainder — needs an API key 🔵
 
-- **Run Week 5 against the golden set first.** Everything below assumes the
-  generation path has actually been exercised.
-- Quoted evidence and source links in the UI (baseline exists — evidence cards
-  and source links are already rendered). Now that citations are verified quotes
-  rather than 500-character excerpts, the evidence cards should show the quote
-  in context.
-- Grow the golden set beyond its current 13 cases, and cover the 10-Q and DEF 14A
-  as deliberately as the 10-K.
-- Score **citation correctness**, **support** (does the cited text actually back
-  the answer — the gap verification cannot close), and **abstention quality** —
-  turning [tests/golden_set.json](tests/golden_set.json) from a pass/fail
-  contract into measured metrics with a tracked baseline.
-- **Prompt caching** for the system prompt, to cut the per-question cost that
-  Week 5 introduced.
+The scoring, the grown set, caching and the UI are done. What remains needs
+credentials:
+
+- **Record a generation-mode baseline.** `evaluate.py --save-baseline` with a key
+  set, alongside the extractive one, to measure what the model is worth. The
+  headline number to watch is *declined when it should*, currently 6/13.
+- **Close or re-classify the seven open gaps.** If Claude closes them, clear the
+  `known_gap` flags. If it does not, the classification tells us which kind it
+  struggles with — `subject_mismatch` and `fact_not_stated` may not be equally
+  hard.
+- **A support metric.** Quote verification proves a quote is genuine, not that it
+  licenses the claim built on it. Measuring that needs either human review or an
+  LLM judge scoring answer-against-evidence — the harness already returns
+  everything such a judge would need.
+- **Confirm caching works.** `cache_read_tokens` should be non-zero from the
+  second question onward; if it is zero, the prefix is below the model's
+  minimum.
+
+---
+
+## After the roadmap: any company, on demand 🟢
+
+The MVP was scoped to one hard-coded ticker. It now takes any US company with a
+ticker in EDGAR's mapping, ingested on demand from the UI.
+
+Most of the foundation was already company-agnostic — `get_cik_for_ticker` takes
+any symbol, every chunk already carried a `ticker`, and chunk IDs are keyed on
+globally-unique accession numbers, so one Chroma collection holds every company
+without collisions. What actually had to change:
+
+- **Scoped reads.** `load_all_chunks(ticker=...)` and
+  `query_vector_store(..., ticker=...)` filter by company. Without this, two
+  companies in one store would answer each other's questions — and BM25 would
+  judge term rarity across all of them rather than within one filer's filings.
+- **Two caches that would have broken.** `_lexical_index` cleared itself on every
+  miss ("single-corpus process"), which would have re-tokenized on every company
+  switch; it is now an LRU of 8. `app.active_corpus` was `lru_cache(maxsize=1)`
+  over *everything*; it is now `company_corpus(ticker)`.
+- **On-demand ingestion** ([src/company.py](src/company.py)) — resolve the ticker,
+  download 8 filings, chunk, embed, index, reporting progress through a callback
+  rather than printing. A filing that fails to download is skipped rather than
+  losing the company.
+- **A background job in the app.** Ingestion takes 30–90 seconds, too long for
+  one request, so it runs on a thread and the page polls `/api/company/status`.
+  One load at a time, since two would write the same collection.
+- **UI** — a company dropdown, a ticker box, and a progress bar.
+
+`SEC_USER_AGENT` is now required to fetch anything; without it the app runs
+read-only over what is already indexed and says why.
+
+**Tests: 97** (up from 77). The ingestion flow is covered against a stubbed SEC
+client — including the partial-download path — so none of it needs the network.
+The one thing not exercised offline is a real EDGAR fetch.
 
 ---
 
@@ -385,21 +554,26 @@ Expect real cost: 13 golden-set cases × ~2-4K input tokens each on Opus 5.
 
 - **Week 5's live path has never run.** No API key on this machine. The wiring,
   verification, and fallback are unit-tested against fakes; Claude's actual
-  judgement on these filings is unverified, and so is whether it closes the two
-  known gaps. This is the largest open risk in the project.
+  judgement on these filings is unverified. This is the largest open risk in the
+  project, and every measurement below is therefore extractive-mode only.
+- **Specificity is 46%.** Seven of 26 golden-set questions are answered when they
+  should be declined. Every failure is of this kind — the system has never
+  wrongly refused. Retrieval cannot fix these; all seven are recorded with a
+  diagnosis and a class.
 - **Verification proves a quote is real, not that it supports the claim.** A
   model could quote accurately and still draw a conclusion the quote does not
-  license. Catching that is Week 6's "support" metric.
-- **Retrieval cannot tell whose facts these are.** The two open golden-set gaps.
-  A question about another company's patents, or a person's home address, finds
-  evidence that genuinely matches the words. Week 5 is built to close these but
-  has not been run against them.
-- **Cost per question is now real.** Every answered question is an Opus 5 call
-  with several thousand tokens of evidence. No caching of the system prompt or
-  evidence yet, and no per-session budget.
-- **Thresholds are tuned on 13 cases.** The 0.60 distance floor and 60% coverage
-  bar separate the current golden set; they are not validated at any scale.
-  Widening the set may move them.
+  license. Measuring that needs a judge, and is not built.
+- **Cost per question is real.** Every answered question is an Opus 5 call with
+  several thousand tokens of evidence. The system prompt is cached; the evidence
+  is not, and cannot be, since it differs per question. No per-session budget.
+- **Thresholds are validated on 26 cases, one company.** The 0.60 distance floor
+  and 60% coverage bar were swept against this set and are stable across it, but
+  26 questions on one filer is a small basis.
+- **Section labels can be wrong in proxy statements.** The ALL-CAPS heading rule
+  cannot tell a section heading from a table row label rendered as a `<div>`.
+  Ten ownership-footnote chunks currently carry the label `ALL CURRENT DIRECTORS
+  AND NEOS AS A GROUP`. The content is fine; the label is not, and section
+  matches carry double weight in the lexical gate.
 - **Page furniture leaks into chunks.** Running headers and page numbers
   ("`None. 55 Table of Contents`") still ride along in short chunks. Harmless for
   retrieval, ugly as a citation shown to a user.
@@ -410,5 +584,15 @@ Expect real cost: 13 golden-set cases × ~2-4K input tokens each on Opus 5.
 - **`period_of_report` backfill** — the existing `data/metadata` JSON predates the
   `reportDate` capture, so some filings fall back to the filing date until
   re-ingestion.
-- **Single company by scope** — multi-company compare and filing-diff are
-  explicitly out of scope for the MVP.
+- **A real EDGAR fetch has never run through the new path.** Ingestion is tested
+  against a stubbed client, so parsing, chunking and indexing are covered, but
+  the live download has only been exercised by the older CLI. Needs
+  `SEC_USER_AGENT` set and one company loaded to confirm.
+- **Retrieval thresholds were fit on one company.** The 0.60 distance floor and
+  60% coverage bar were swept against 26 NVCT questions. Loading a second company
+  is now cheap, and is the obvious way to find out whether they generalize.
+- **No cross-company comparison.** Each answer is scoped to one company by
+  design. Comparing two in a single answer needs period alignment and line-item
+  reconciliation, which is its own project.
+- **Disk grows per company** — roughly 640 chunks and a few MB of raw HTML each.
+  Nothing evicts old companies.

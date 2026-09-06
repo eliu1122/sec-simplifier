@@ -30,6 +30,7 @@ except (AttributeError, ValueError):  # pragma: no cover - non-standard streams
     pass
 
 GOLDEN_SET_PATH = Path(__file__).parent / "tests" / "golden_set.json"
+TICKER = json.loads(GOLDEN_SET_PATH.read_text(encoding="utf-8")).get("corpus", {}).get("ticker")
 VECTOR_CANDIDATES = 10
 WIDTH = 78
 
@@ -44,7 +45,7 @@ def load_corpus() -> tuple[list[dict], str]:
             '  python -m pip install -r requirements.txt'
         )
 
-    corpus = load_all_chunks()
+    corpus = load_all_chunks(ticker=TICKER)
     if not corpus:
         raise SystemExit(
             "The vector store is empty. Build it first:\n"
@@ -86,7 +87,7 @@ def evaluate(case: dict, corpus: list[dict], generator=None) -> dict:
     hybrid = answer_question(
         question,
         corpus,
-        query_vector_store(question, limit=VECTOR_CANDIDATES),
+        query_vector_store(question, limit=VECTOR_CANDIDATES, ticker=TICKER),
         generator=generator,
     )
     return {

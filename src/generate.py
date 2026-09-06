@@ -183,7 +183,17 @@ def generate_grounded_answer(
     response = client.messages.parse(
         model=model,
         max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
+        # The system prompt is identical on every request and renders before the
+        # messages, so it is worth caching: roughly a quarter of the input
+        # tokens for a typical question. The evidence differs per question and
+        # goes after it, where it cannot invalidate the cached prefix.
+        system=[
+            {
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ],
         thinking={"type": "adaptive"},
         messages=[{"role": "user", "content": build_prompt(question, evidence)}],
         output_format=GroundedAnswer,
@@ -194,6 +204,11 @@ def generate_grounded_answer(
     usage = {
         "input_tokens": getattr(response.usage, "input_tokens", 0),
         "output_tokens": getattr(response.usage, "output_tokens", 0),
+        # Zero cache reads across repeated questions means the system prompt is
+        # not caching - most likely a model whose minimum cacheable prefix is
+        # longer than the prompt (512 tokens on Opus 5, but 4096 on some).
+        "cache_read_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+        "cache_write_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
         "model": model,
     }
 

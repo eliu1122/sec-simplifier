@@ -235,6 +235,8 @@ def test_generator_failure_falls_back_to_the_extractive_answer():
 class _StubUsage:
     input_tokens = 2500
     output_tokens = 300
+    cache_read_input_tokens = 700
+    cache_creation_input_tokens = 0
 
 
 class _StubResponse:
@@ -274,8 +276,22 @@ def test_request_is_shaped_for_structured_output():
     assert client.request["model"] == DEFAULT_MODEL
     assert client.request["output_format"] is GroundedAnswer
     assert client.request["thinking"] == {"type": "adaptive"}
-    assert "SEC filings" in client.request["system"]
     assert "acc:liquidity:0" in client.request["messages"][0]["content"]
+
+    # The system prompt is identical every request, so it carries a cache
+    # breakpoint; the per-question evidence goes after it in `messages`.
+    system = client.request["system"]
+    assert "SEC filings" in system[0]["text"]
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_cache_usage_is_reported_back():
+    from src.generate import generate_grounded_answer
+
+    client = _StubClient(_answer(supported=False, answer="", citations=[], reason_if_unsupported="no"))
+    result = generate_grounded_answer("q", EVIDENCE, client=client)
+
+    assert result["usage"]["cache_read_tokens"] == 700
 
 
 def test_supported_answer_returns_only_verified_citations():

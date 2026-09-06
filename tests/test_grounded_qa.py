@@ -316,6 +316,71 @@ def test_long_sections_are_split_into_bounded_chunks():
     assert len({c["chunk_id"] for c in chunks}) == len(chunks)
 
 
+PROXY_HTML = """
+<html><body>
+  <p>TABLE OF CONTENTS</p>
+  <p>CORPORATE GOVERNANCE</p>
+  <p>The Board met eight times during the last fiscal year.</p>
+  <p>TABLE OF CONTENTS</p>
+  <p>EXECUTIVE COMPENSATION</p>
+  <p>The following table sets forth compensation for our named executive officers.</p>
+  <p>REPORT OF THE AUDIT COMMITTEE</p>
+  <p>The Audit Committee reviewed the audited financial statements.</p>
+</body></html>
+"""
+
+
+def _proxy_chunks():
+    return build_chunks_from_html(
+        ticker="NVCT", form="DEF 14A", filing_date="2026-04-27",
+        source_url="https://example.com/proxy", html_text=PROXY_HTML,
+        document_name="proxy.htm", accession_number="acc-proxy",
+    )
+
+
+def test_proxy_statement_is_split_on_its_capitalised_headings():
+    """A DEF 14A has no `Item N.` headings; without this it collapses to one chunk."""
+    sections = [chunk["section"] for chunk in _proxy_chunks()]
+
+    assert "CORPORATE GOVERNANCE" in sections
+    assert "EXECUTIVE COMPENSATION" in sections
+    assert "REPORT OF THE AUDIT COMMITTEE" in sections
+    assert "Document" not in sections, "should not have fallen back to whole-document"
+
+
+def test_running_headers_are_not_treated_as_proxy_sections():
+    assert "TABLE OF CONTENTS" not in [chunk["section"] for chunk in _proxy_chunks()]
+
+
+def test_capitalised_headings_do_not_split_a_filing_that_has_item_headings():
+    """The proxy rule is a fallback, so an all-caps table caption cannot fragment a 10-K."""
+    html = (
+        "<h1>Item 8. Financial Statements</h1>"
+        "<p>NUVECTIS PHARMA, INC. CONDENSED BALANCE SHEETS</p>"
+        "<p>The accompanying notes are an integral part of these statements.</p>"
+    )
+    chunks = build_chunks_from_html(
+        ticker="NVCT", form="10-K", filing_date="2026-02-11",
+        source_url="https://example.com/f", html_text=html,
+        document_name="f.htm", accession_number="acc-1",
+    )
+
+    assert {chunk["section"] for chunk in chunks} == {"Item 8. Financial Statements"}
+
+
+def test_a_document_with_no_headings_is_windowed_not_truncated():
+    body = "The registrant has no reportable items for this period. " * 200
+    chunks = build_chunks_from_html(
+        ticker="NVCT", form="8-K", filing_date="2026-08-21",
+        source_url="https://example.com/f", html_text=f"<html><body><p>{body}</p></body></html>",
+        document_name="f.htm", accession_number="acc-1",
+    )
+
+    assert len(chunks) > 1
+    # Previously this path truncated the document to its first 2,000 characters.
+    assert sum(len(chunk["text"]) for chunk in chunks) > 5000
+
+
 def _two_chunk_corpus():
     return [
         {

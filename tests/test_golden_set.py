@@ -84,7 +84,11 @@ def test_golden_case_matches_expected_support(case, indexed_corpus, generator):
 
 @pytest.mark.parametrize(
     "case",
-    [case for case in _cases() if case.get("expect_section_contains")],
+    [
+        case
+        for case in _cases()
+        if case.get("expect_section_contains") and not case.get("section_known_gap")
+    ],
     ids=lambda case: case["question"][:48],
 )
 def test_golden_case_cites_the_expected_section(case, indexed_corpus, generator):

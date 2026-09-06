@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import OrderedDict
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -62,6 +63,52 @@ def _split_long_text(text: str, limit: int = MAX_CHUNK_CHARS) -> list[str]:
     return windows
 
 
+# A section heading is never a table cell. Layout tables are full of all-caps
+# row labels ("ALL CURRENT DIRECTORS AND NEOS AS A GROUP") that read exactly
+# like headings and would otherwise carve a filing into fragments.
+NON_HEADING_TAGS = {"td", "th"}
+
+
+def _is_item_heading(text: str, tag_name: str = "") -> bool:
+    """`Item 1A.` style headings, used by 10-K, 10-Q and 8-K."""
+    return bool(re.match(r"(?i)^Item\s+\d+[A-Z0-9]*\.", text))
+
+
+# Running headers and cover-page boilerplate that look like headings but are
+# page furniture repeated throughout the document.
+CAPS_HEADING_NOISE = {
+    "table of contents",
+    "united states securities and exchange commission",
+    "schedule 14a information",
+    "your vote is important",
+    "your vote is important!",
+}
+
+MAX_HEADING_CHARS = 90
+MIN_UPPERCASE_RATIO = 0.75
+
+
+def _is_caps_heading(text: str, tag_name: str = "") -> bool:
+    """An ALL-CAPS heading, used by proxy statements.
+
+    A DEF 14A contains no `Item N.` headings at all - it is organised under
+    headings like EXECUTIVE COMPENSATION and REPORT OF THE AUDIT COMMITTEE. This
+    is only consulted for documents where no Item heading was found, so it
+    cannot fragment a 10-K on an all-caps table caption.
+    """
+    if tag_name in NON_HEADING_TAGS:
+        return False
+    if len(text) > MAX_HEADING_CHARS or text.strip(" .:").lower() in CAPS_HEADING_NOISE:
+        return False
+    if len(text.split()) < 2:
+        return False
+    letters = [character for character in text if character.isalpha()]
+    if len(letters) < 6:
+        return False
+    uppercase = sum(1 for character in letters if character.isupper())
+    return uppercase / len(letters) >= MIN_UPPERCASE_RATIO
+
+
 def make_chunk_id(accession_number: str, section: str, chunk_index: int) -> str:
     """Stable ID for a chunk.
 
@@ -94,54 +141,65 @@ def build_chunks_from_html(
     drop_table_of_contents(soup)
     extracted_tables = extract_data_tables(soup, TABLE_MARKER)
 
-    # (section, chunk_type, table_title, body) in document order.
-    blocks: list[tuple[str, str, str, str]] = []
-    current_section = None
-    current_text: list[str] = []
+    def walk(is_heading) -> list[tuple[str, str, str, str]]:
+        """Collect (section, chunk_type, table_title, body) in document order."""
+        blocks: list[tuple[str, str, str, str]] = []
+        current_section = None
+        current_text: list[str] = []
 
-    def flush_text() -> None:
-        if current_section and current_text:
-            body = " ".join(current_text)
-            for window in _split_long_text(body):
-                blocks.append((current_section, "text", "", window))
-        current_text.clear()
+        def flush_text() -> None:
+            if current_section and current_text:
+                body = " ".join(current_text)
+                for window in _split_long_text(body):
+                    blocks.append((current_section, "text", "", window))
+            current_text.clear()
 
-    for tag in soup.find_all(BLOCK_TAGS):
-        # Skip containers; their block children carry the same text.
-        if tag.find(BLOCK_TAGS) is not None:
-            continue
-        text = clean_text(tag.get_text(" ", strip=True))
-        if not text:
-            continue
+        for tag in soup.find_all(BLOCK_TAGS):
+            # Skip containers; their block children carry the same text.
+            if tag.find(BLOCK_TAGS) is not None:
+                continue
+            text = clean_text(tag.get_text(" ", strip=True))
+            if not text:
+                continue
 
-        marker = _TABLE_MARKER_RE.match(text)
-        if marker:
-            if current_section:
+            marker = _TABLE_MARKER_RE.match(text)
+            if marker:
+                if current_section:
+                    flush_text()
+                    table = extracted_tables[int(marker.group(1))]
+                    blocks.append((current_section, "table", table["title"], table["body"]))
+                continue
+
+            text = " ".join(_TABLE_MARKER_ANY.sub(" ", text).split())
+            if not text:
+                continue
+
+            if is_heading(text, tag.name):
                 flush_text()
-                table = extracted_tables[int(marker.group(1))]
-                blocks.append((current_section, "table", table["title"], table["body"]))
-            continue
+                current_section = text
+                continue
 
-        text = " ".join(_TABLE_MARKER_ANY.sub(" ", text).split())
-        if not text:
-            continue
+            if current_section:
+                current_text.append(text)
 
-        if re.match(r"(?i)^Item\s+\d+[A-Z0-9]*\.", text):
-            flush_text()
-            current_section = text
-            continue
+        flush_text()
+        return blocks
 
-        if current_section:
-            current_text.append(text)
-
-    flush_text()
+    # 10-K, 10-Q and 8-K are organised by `Item N.` headings. A proxy statement
+    # has none, so fall back to its ALL-CAPS headings rather than discarding the
+    # document - the DEF 14A is where compensation and governance live.
+    blocks = walk(_is_item_heading)
+    if not blocks:
+        blocks = walk(_is_caps_heading)
 
     if not blocks:
         raw_text = re.sub(r"<script.*?</script>", " ", html_text, flags=re.I | re.S)
         raw_text = re.sub(r"<style.*?</style>", " ", raw_text, flags=re.I | re.S)
         cleaned = re.sub(r"<[^>]+>", " ", raw_text)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        blocks.append(("Document", "text", "", cleaned[:2000]))
+        # Window it rather than truncating: a document with no recognizable
+        # headings is still evidence.
+        blocks = [("Document", "text", "", window) for window in _split_long_text(cleaned)]
 
     chunks: list[dict[str, Any]] = []
     seen_sections: dict[str, int] = {}
@@ -219,7 +277,12 @@ def _term_counts(text: str) -> dict[str, int]:
     return counts
 
 
-_INDEX_CACHE: dict[tuple, tuple] = {}
+_INDEX_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+
+# Corpora to keep tokenized at once. One per company in play: a user comparing a
+# handful of companies should not re-tokenize on every question, but the cache
+# must not grow without bound either.
+INDEX_CACHE_SIZE = 8
 
 
 def _lexical_index(corpus: list[dict[str, Any]]) -> tuple[list[dict[str, int]], dict[str, int], float]:
@@ -227,8 +290,13 @@ def _lexical_index(corpus: list[dict[str, Any]]) -> tuple[list[dict[str, int]], 
 
     Tokenizing the whole corpus on every question is the dominant cost of
     lexical scoring, so the result is memoized against a cheap fingerprint of
-    the corpus. Rebuilding the index means restarting the process, which is
-    already required after re-ingesting filings.
+    the corpus. Several companies can be in play at once, so this is an LRU
+    rather than a single slot - switching back to a company you asked about a
+    moment ago should not re-tokenize its filings.
+
+    Note the document frequencies are per-corpus, which is what makes BM25
+    meaningful here: a term's rarity is judged within one company's filings, not
+    across every company that happens to be indexed.
     """
     fingerprint = (
         len(corpus),
@@ -237,6 +305,7 @@ def _lexical_index(corpus: list[dict[str, Any]]) -> tuple[list[dict[str, int]], 
     )
     cached = _INDEX_CACHE.get(fingerprint)
     if cached is not None:
+        _INDEX_CACHE.move_to_end(fingerprint)
         return cached
 
     counts = [_term_counts(chunk.get("text", "")) for chunk in corpus]
@@ -247,8 +316,9 @@ def _lexical_index(corpus: list[dict[str, Any]]) -> tuple[list[dict[str, int]], 
     lengths = [sum(chunk_counts.values()) for chunk_counts in counts]
     average_length = (sum(lengths) / len(lengths)) if lengths else 1.0
 
-    _INDEX_CACHE.clear()  # single-corpus process; do not accumulate
     _INDEX_CACHE[fingerprint] = (counts, document_frequency, average_length or 1.0)
+    while len(_INDEX_CACHE) > INDEX_CACHE_SIZE:
+        _INDEX_CACHE.popitem(last=False)
     return _INDEX_CACHE[fingerprint]
 
 
@@ -387,7 +457,44 @@ def retrieve_hybrid(
             ranks[key] = ranks.get(key, 0.0) + 1.0 / (RRF_K + position + 1)
 
     ordered = sorted(fused, key=lambda key: ranks[key], reverse=True)
-    return [fused[key] for key in ordered[:limit]]
+    return _diversify([fused[key] for key in ordered], limit)
+
+
+# Evidence slots are few, so spending them all on one section is wasteful: three
+# passages from the same section usually make one point, and crowd out the
+# section that actually answers the question. Filings make this worse than most
+# corpora, because a mislabelled heading can attach one section name to a long
+# run of chunks.
+MAX_CHUNKS_PER_SECTION = 2
+
+
+def _diversify(ranked: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Take the top `limit`, but prefer not to fill them from a single section.
+
+    Order is otherwise preserved, and the cap is relaxed rather than returning
+    fewer results when there is nothing else to draw on.
+    """
+    selected: list[dict[str, Any]] = []
+    held_back: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+
+    for chunk in ranked:
+        if len(selected) == limit:
+            break
+        section = f"{chunk.get('form', '')}|{chunk.get('section', '')}"
+        if seen.get(section, 0) >= MAX_CHUNKS_PER_SECTION:
+            held_back.append(chunk)
+            continue
+        seen[section] = seen.get(section, 0) + 1
+        selected.append(chunk)
+
+    # Nothing else qualified - fall back to the ranking as it stood.
+    for chunk in held_back:
+        if len(selected) == limit:
+            break
+        selected.append(chunk)
+
+    return selected
 
 
 def _why_it_matters(section: str, question: str) -> str:
