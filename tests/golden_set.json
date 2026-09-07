@@ -20,7 +20,9 @@
     "",
     "Score this file with `python evaluate.py`.",
     "",
-    "'portable' marks a case whose expectation holds for any US filer, so it can be scored against a different company with `python evaluate.py --ticker AAPL`. Cases naming this company's drug, and 'How many patents does Apple hold?' (a fair question when the loaded company is Apple), are deliberately not portable."
+    "'portable' marks a case whose expectation holds for any US filer, so it can be scored against a different company with `python evaluate.py --ticker AAPL`. Cases naming this company's drug, and 'How many patents does Apple hold?' (a fair question when the loaded company is Apple), are deliberately not portable.",
+    "",
+    "'question_class: exact_identifier' marks questions that name a filing section or form rather than describing a topic. They are the case the lexical half of hybrid retrieval was kept for, and were added after a proposed change scored better on every other case while silently breaking this one."
   ],
   "corpus": {
     "ticker": "NVCT",
@@ -211,11 +213,38 @@
     {
       "question": "What is the weather forecast for New Jersey?",
       "expect": "abstain",
-      "known_gap": true,
-      "gap_class": "fact_not_stated",
       "why": "Absurd for a filing, but the company is headquartered in New Jersey.",
       "gap_reason": "The state name appears in the address block and MD&A prose. That a question this obviously unanswerable still gets through is the clearest single argument for a reading step.",
-      "portable": true
+      "portable": true,
+      "gap_reason_resolved": "Closed by the lexical distance veto. The failure was never the vector half - it placed this text at 0.78+, well past the floor. The lexical gate let it through because 'forecast' is financial vocabulary and the state name sits in the address block, and the two gates were OR'd so the weaker one decided."
+    },
+    {
+      "question": "What does Item 1A disclose?",
+      "expect": "supported",
+      "portable": true,
+      "question_class": "exact_identifier",
+      "why": "Names a filing section directly. The lexical half exists for exactly this - an item reference is an identifier, not a meaning embeddings capture well."
+    },
+    {
+      "question": "What was reported on Form 8-K?",
+      "expect": "supported",
+      "portable": true,
+      "question_class": "exact_identifier",
+      "why": "Names a form rather than a topic."
+    },
+    {
+      "question": "What is disclosed in Item 7 of the annual report?",
+      "expect": "supported",
+      "portable": true,
+      "question_class": "exact_identifier",
+      "why": "Item number plus form name, no topical content at all."
+    },
+    {
+      "question": "What does Item 3 say about legal proceedings?",
+      "expect": "supported",
+      "portable": true,
+      "question_class": "exact_identifier",
+      "why": "Item reference paired with a topic - the mixed case."
     }
   ]
 }

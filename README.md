@@ -56,7 +56,7 @@ account of what is built, what is pending, and the known weaknesses.
 | 3 | Vector store and metadata | Persist chunks and metadata in Chroma, with a stable chunk ID, filing accession number, section, period, and source URL. | Complete - `src/build_index.py` writes a persistent Chroma store; every chunk carries a stable ID and full filing metadata. |
 | 4 | Hybrid retrieval | Combine lexical/keyword search with vector similarity search, then rerank the strongest evidence chunks. | Complete - table-aware chunking, BM25 + vector search fused with reciprocal rank fusion, two-gate abstention. Live in the app. |
 | 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Built - structured output, verified quotes, abstention. **Live path unrun: needs an `ANTHROPIC_API_KEY`.** |
-| 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Complete - `evaluate.py` scores a 26-case set against a tracked baseline. 19/26 in extractive mode. |
+| 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Complete - `evaluate.py` scores a 30-case set against a tracked baseline. 24/30 on NVCT; portable subset scored across 6 companies. |
 
 ### Current position
 
@@ -85,12 +85,12 @@ company to **any ticker searched on demand** — see below.
 - Quote verification proves a quote is genuine, not that it supports the claim
   built on it. Measuring that needs a judge.
 - **The retrieval thresholds do not generalize, and this is now measured.**
-  Scoring the portable golden-set cases against three companies gives 100% recall
-  every time but specificity of 62% (NVCT), 38% (QURE) and 25% (AAPL). On the
-  latter two, no distance floor separates the questions that should be answered
-  from those that should not - the ranges overlap. See [PROGRESS.md](PROGRESS.md).
-  This makes the unrun generation step the only remaining mechanism that could
-  fix abstention.
+  Scoring the portable cases against six companies gives 100% recall every time,
+  but specificity of 75% on NVCT against 38-50% on the rest - NVCT being the
+  company the thresholds were tuned on. On five of six, no distance floor
+  separates the questions that should be answered from those that should not;
+  the ranges overlap. See [PROGRESS.md](PROGRESS.md). This makes the unrun
+  generation step the only remaining mechanism that could fix abstention.
 
 ## Searching any company
 
@@ -409,7 +409,7 @@ the delta, so a change that helps one metric and quietly costs another shows up.
 
 ### Scoring a different company
 
-Nineteen of the 26 cases are marked `portable` - their expectation holds for any
+Twenty-three of the 30 cases are marked `portable` - their expectation holds for any
 US filer - so they can be scored against any loaded company:
 
 ```powershell
@@ -420,9 +420,12 @@ Doing this is what showed the retrieval thresholds were fit to one company:
 
 | Company | recall | specificity | overall |
 | --- | --- | --- | --- |
-| NVCT | 100% | 62% | 16/19 |
-| AAPL | 100% | 25% | 13/19 |
-| QURE | 100% | 38% | 14/19 |
+| NVCT | 100% | 75% | 21/23 |
+| AAPL | 100% | 38% | 18/23 |
+| QURE | 100% | 50% | 19/23 |
+| MSFT | 100% | 38% | 18/23 |
+| JPM  | 100% | 50% | 19/23 |
+| WMT  | 100% | 38% | 18/23 |
 
 Cases naming this company's drug, and "How many patents does Apple hold?" - a
 fair question when the loaded company *is* Apple - are deliberately not portable.

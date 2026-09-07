@@ -8,10 +8,10 @@ this disclosed"* when the filings don't support an answer.
 
 **Two things are measured and worth knowing before reading further:**
 
-- Across three companies, recall is **100%** and every failure is a question that
-  should have been *declined*. Specificity ranges 25–62% depending on the
-  company — the retrieval thresholds do not generalize, and no distance floor
-  separates the two classes on two of the three. See
+- Across **six** companies, recall is **100%** and every failure is a question
+  that should have been *declined*. Specificity ranges 38–75% — the retrieval
+  thresholds do not generalize, and no distance floor separates the two classes
+  on five of the six. See
   [the generalization finding](#what-a-second-company-revealed-the-thresholds-do-not-generalize-).
 - The Claude generation step — the only component that reads evidence rather
   than scoring vocabulary, and so the only remaining mechanism that could fix
@@ -32,7 +32,7 @@ flowchart TD
     C["<b>3 · Vector store &amp; metadata</b><br/>Chroma · stable chunk IDs<br/>per-filing citation metadata"]
     D["<b>4 · Hybrid retrieval</b><br/>BM25 + vector search, RRF fusion<br/>two gates guard abstention"]
     E["<b>5 · Claude orchestration</b><br/>writes the answer from the evidence<br/>every quote verified against source"]
-    F["<b>6 · Cited answer + evaluation</b><br/>quotes the filing or flags the gap<br/>scored against 26 reviewed cases"]
+    F["<b>6 · Cited answer + evaluation</b><br/>quotes the filing or flags the gap<br/>scored across six companies"]
 
     A --> B --> C --> D --> E --> F
 
@@ -53,7 +53,7 @@ flowchart TD
 | 3 · Vector store & metadata | 🟢 done | [src/vector_store.py](src/vector_store.py), [src/build_index.py](src/build_index.py) |
 | 4 · Hybrid retrieval | 🟢 done | [src/grounded_qa.py](src/grounded_qa.py), [app.py](app.py) |
 | 5 · Grounded generation (Claude) | 🟡 built and unit-tested; **live path unrun — needs an API key** | [src/generate.py](src/generate.py) |
-| 6 · Cited answers & evaluation | 🟢 scored 19/26 in extractive mode, with a tracked baseline | [evaluate.py](evaluate.py), [tests/golden_set.json](tests/golden_set.json) |
+| 6 · Cited answers & evaluation | 🟢 30 cases, scored across 6 companies, tracked baseline | [evaluate.py](evaluate.py), [tests/golden_set.json](tests/golden_set.json) |
 
 ---
 
@@ -579,9 +579,15 @@ questions:
 
 | Company | recall | specificity | overall |
 | --- | --- | --- | --- |
-| NVCT | 11/11 · **100%** | 5/8 · **62%** | 16/19 · 84% |
-| AAPL | 11/11 · **100%** | 2/8 · **25%** | 13/19 · 68% |
-| QURE | 11/11 · **100%** | 3/8 · **38%** | 14/19 · 74% |
+| NVCT | 15/15 · **100%** | 6/8 · **75%** | 21/23 · 91% |
+| AAPL | 15/15 · **100%** | 3/8 · **38%** | 18/23 · 78% |
+| QURE | 15/15 · **100%** | 4/8 · **50%** | 19/23 · 83% |
+| MSFT | 15/15 · **100%** | 3/8 · **38%** | 18/23 · 78% |
+| JPM  | 15/15 · **100%** | 4/8 · **50%** | 19/23 · 83% |
+| WMT  | 15/15 · **100%** | 3/8 · **38%** | 18/23 · 78% |
+
+Six companies, 23 portable cases each. Before the lexical veto described below,
+specificity was 62 / 25 / 38 / 25 / 38 / 25%.
 
 **Recall is perfect on every company. Specificity spans a 2.5× range on
 identical questions.** Everything the pipeline gets wrong, on every company, is
@@ -624,6 +630,48 @@ exists. It stops being an enhancement and becomes the only remaining mechanism
 that could work, since it is the only component that reads the retrieved text
 rather than scoring its vocabulary. It is also still unrun.
 
+### One fix the six-company data did make possible
+
+Diagnosing *"What is the weather forecast for New Jersey?"* — answered on all six
+companies — showed the vector half was never the problem. It placed that text at
+0.78–0.82, well past the 0.60 floor, correctly. **The lexical gate was the leak:**
+"forecast" is financial vocabulary (forward-looking statements) and the state
+name sits in the address block, so two or three chunks cleared both the count and
+coverage bars.
+
+Because the gates are OR'd, a chunk needs only one of them — so the *weaker* gate
+sets the floor. That is backwards for abstention.
+
+The fix (`MAX_LEXICAL_VETO_DISTANCE`): a chunk that passes the lexical gate but
+which vector search placed far away, or never surfaced at all, is dropped.
+Measured across six companies:
+
+| | recall | specificity |
+| --- | --- | --- |
+| before | 90/90 · 100% | 17/48 · 35% |
+| after | 90/90 · **100%** | 23/48 · **48%** |
+
+Uniform +1 correct abstention on every company, no recall cost. Stable from 0.80
+down to 0.65 — a plateau, not a knife-edge fit, so 0.80 was chosen as the
+loosest value capturing the full gain.
+
+**Two things this nearly got wrong, both caught by testing rather than reasoning:**
+
+- Probing question types the golden set did not cover found that *"What does the
+  DEF 14A say about voting?"* broke — an exact form reference the embedding does
+  not place close, which is precisely the case the lexical half was kept for.
+  Fixed with `_matches_identifier`: a question naming a chunk's section or form
+  is exempt from the veto. Four `exact_identifier` cases were then added to the
+  golden set so this class is measured rather than remembered.
+- With no vector hits at all — no `chromadb`, or no index built — every lexical
+  match has an unknown distance, so the veto would have suppressed all of them
+  and made the app abstain on *everything* in its fallback mode. The veto now
+  applies only when vector search actually ran and had an opinion.
+
+This closed one of the seven recorded gaps. The harness refused to let it close
+quietly: `test_known_gaps_are_still_recorded_as_gaps` failed until the flag was
+cleared, which is what that test is for.
+
 The three failures common to all companies — home address, earnings call,
 weather forecast — are the same `subject_mismatch` and `fact_not_stated` classes
 recorded in Week 6, now confirmed to be company-independent rather than quirks
@@ -665,14 +713,16 @@ of one filer.
 - **`period_of_report` backfill** — the existing `data/metadata` JSON predates the
   `reportDate` capture, so some filings fall back to the filing date until
   re-ingestion.
-- **Abstention is the whole remaining problem.** Across three companies and 19
-  shared questions, recall is 100% and every single failure is a question that
-  should have been declined. Nothing is wrongly refused; plenty is wrongly
-  answered.
+- **Abstention is the whole remaining problem.** Across six companies and 23
+  shared questions, recall is 100% (90/90) and every single failure is a question
+  that should have been declined. Nothing is wrongly refused; slightly over half
+  of what should be refused is answered.
 - **Retrieval thresholds do not generalize - measured, not suspected.** The 0.60
-  distance floor was fit to NVCT. On AAPL and QURE the should-answer and
-  should-abstain distance ranges overlap, so no floor separates them. Specificity
-  falls from 62% to 25% on the same questions.
+  distance floor was fit to NVCT. On the other five companies the should-answer
+  and should-abstain distance ranges overlap, so no floor separates them.
+  Specificity on the tuning company is roughly double the rest: 75% against
+  38-50%. NVCT is a small clinical-stage pharma with little surface area to
+  match against, which made it an unrepresentatively easy company to tune on.
 - **No cross-company comparison.** Each answer is scoped to one company by
   design. Comparing two in a single answer needs period alignment and line-item
   reconciliation, which is its own project.

@@ -262,6 +262,17 @@ MIN_LEXICAL_COVERAGE = 0.6
 # the golden set: on-topic questions land at 0.45-0.60, off-topic at 0.65+.
 MAX_VECTOR_DISTANCE = 0.60
 
+# A chunk the lexical scorer likes but that vector search never surfaced is
+# usually a vocabulary coincidence rather than evidence. "What is the weather
+# forecast for New Jersey?" clears the lexical gate on every company tested,
+# because "forecast" is financial vocabulary and the state name sits in the
+# address block - while the embedding correctly places the same text at 0.78+.
+#
+# Because the two gates are OR'd, the weaker one sets the floor. Requiring the
+# embedding not to actively disagree raised specificity from 35% to 48% across
+# six companies with no measured recall cost.
+MAX_LEXICAL_VETO_DISTANCE = 0.80
+
 # Reciprocal-rank-fusion damping. The conventional 60 makes fusion depend on
 # rank order rather than on two scores that are not on the same scale.
 RRF_K = 60
@@ -420,6 +431,19 @@ def _chunk_key(chunk: dict[str, Any]) -> str:
     return f"{chunk.get('source_url', '')}|{chunk.get('section', '')}|{chunk.get('chunk_index', '')}"
 
 
+def _matches_identifier(query_terms: set[str], chunk: dict[str, Any]) -> bool:
+    """Does the question name this chunk's section or form outright?
+
+    "What does Item 1A disclose?" and "What was reported on Form 8-K?" name a
+    location in the filing rather than describing a topic, which is the one
+    thing embeddings are reliably bad at and the reason the lexical half is
+    kept. Such a match is an identifier, not a coincidence, so it is exempt from
+    the distance veto above - without this, those questions silently break.
+    """
+    identifiers = _keywords(chunk.get("section", "")) | _keywords(chunk.get("form", ""))
+    return bool(query_terms & identifiers)
+
+
 def retrieve_hybrid(
     question: str,
     corpus: list[dict[str, Any]],
@@ -437,11 +461,28 @@ def retrieve_hybrid(
     With no vector hits this degrades to the lexical baseline, which keeps the
     abstention contract identical when the vector store is unavailable.
     """
-    lexical = [
-        chunk
-        for gate, coverage, chunk in score_chunks_lexically(question, corpus)
-        if _passes_lexical_gate(gate, coverage)
-    ]
+    query_terms = _keywords(question)
+    distance_by_key = {
+        _chunk_key(hit): float(hit.get("distance", 1.0)) for hit in vector_hits
+    }
+    # The veto says "the embedding disagrees", which requires the embedding to
+    # have been consulted. With no vector hits at all - no chromadb, or no index
+    # built - there is no disagreement to act on, and applying it anyway would
+    # suppress every lexical match and make the app abstain on everything.
+    veto_available = bool(vector_hits)
+
+    lexical: list[dict[str, Any]] = []
+    for gate, coverage, chunk in score_chunks_lexically(question, corpus):
+        if not _passes_lexical_gate(gate, coverage):
+            continue
+        if not veto_available:
+            lexical.append(chunk)
+            continue
+        # Absent from the vector results entirely counts as "placed far away".
+        distance = distance_by_key.get(_chunk_key(chunk), 1.0)
+        if distance <= MAX_LEXICAL_VETO_DISTANCE or _matches_identifier(query_terms, chunk):
+            lexical.append(chunk)
+
     vector = [
         hit
         for hit in vector_hits

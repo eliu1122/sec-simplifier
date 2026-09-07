@@ -1,19 +1,19 @@
 {
-  "recorded": "2026-09-05",
-  "mode": "hybrid retrieval, extractive answers (no generation)",
+  "recorded": "2026-09-06",
+  "mode": "NVCT - hybrid retrieval, extractive answers (no generation)",
   "stats": {
-    "cases": 26,
-    "answered_when_expected": 13,
-    "answered_total": 13,
-    "declined_when_expected": 6,
+    "cases": 30,
+    "answered_when_expected": 17,
+    "answered_total": 17,
+    "declined_when_expected": 7,
     "declined_total": 13,
-    "correct": 19,
-    "cited_when_answered": 20,
-    "answers": 20,
+    "correct": 24,
+    "cited_when_answered": 23,
+    "answers": 23,
     "section_hits": 4,
     "section_checked": 5,
     "rejected_quotes": 0,
-    "open_gaps": 7,
-    "gaps_recorded": 7
+    "open_gaps": 6,
+    "gaps_recorded": 6
   }
 }

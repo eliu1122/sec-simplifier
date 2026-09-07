@@ -436,6 +436,70 @@ def test_hybrid_deduplicates_a_chunk_found_by_both_retrievers():
     assert hybrid[0]["chunk_id"] == "acc:business:0"
 
 
+# --- The lexical distance veto -------------------------------------------
+
+
+def _veto_corpus():
+    return [
+        {
+            "chunk_id": "acc:properties:0", "ticker": "NVCT", "form": "10-K",
+            "filing_date": "2026-02-11", "section": "Item 2. Properties",
+            # "forecast" is financial vocabulary and the state name sits in an
+            # address block, so a weather question clears the lexical gate here.
+            "text": (
+                "Our principal executive offices are located in Fort Lee, New Jersey. "
+                "This forecast reflects management's current expectations."
+            ),
+            "source_url": "https://example.com/properties", "document_name": "f.htm",
+        },
+    ]
+
+
+def test_a_lexical_match_the_embedding_places_far_away_is_vetoed():
+    corpus = _veto_corpus()
+    question = "What is the weather forecast for New Jersey?"
+
+    # The lexical gate alone accepts it - this is the leak.
+    assert retrieve_supporting_chunks(question, corpus)
+
+    # With the embedding's opinion available and unfavourable, it is dropped.
+    distant = [dict(corpus[0], distance=0.82)]
+    assert retrieve_hybrid(question, corpus, distant) == []
+
+
+def test_a_lexical_match_the_embedding_agrees_with_survives():
+    corpus = _veto_corpus()
+    near = [dict(corpus[0], distance=0.45)]
+
+    assert retrieve_hybrid("Where are the principal executive offices?", corpus, near)
+
+
+def test_a_question_naming_the_section_is_exempt_from_the_veto():
+    """Item and form references are what the lexical half is kept for."""
+    corpus = _veto_corpus()
+    # Absent from the vector hits entirely, so the veto would normally drop it.
+    hits = [{"chunk_id": "other", "section": "Item 9. Other", "form": "10-K",
+             "text": "unrelated", "distance": 0.55}]
+
+    kept = retrieve_hybrid("What does Item 2 say about properties?", corpus, hits)
+
+    assert any(c["chunk_id"] == "acc:properties:0" for c in kept)
+
+
+def test_the_veto_is_not_applied_when_no_vector_hits_exist():
+    """Without an embedding opinion there is no disagreement to act on.
+
+    Applying the veto anyway would suppress every lexical match and make the
+    app abstain on everything whenever chromadb is missing or the index has not
+    been built.
+    """
+    corpus = _veto_corpus()
+    question = "What is the weather forecast for New Jersey?"
+
+    assert retrieve_hybrid(question, corpus) == retrieve_supporting_chunks(question, corpus)
+    assert retrieve_hybrid(question, corpus)
+
+
 def test_answer_question_uses_vector_hits_and_keeps_the_abstention_contract():
     corpus = _two_chunk_corpus()
 
