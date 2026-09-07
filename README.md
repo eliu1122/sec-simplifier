@@ -73,9 +73,12 @@ baseline.
 company tested (90/90 across six), and every single failure is a question that
 should have been *declined*.
 
-**The generation path has never run.** No key for either backend is set on this
-machine, so it is unit-tested against fakes and stub clients only, and every
-number above is retrieval-only. Without a key the app answers with filing
+**Generation has now run** on Gemini's free tier (2026-09-06) and closed three
+recorded gaps, including both cases where retrieval finds evidence about a
+different subject entirely. Specificity on NVCT went 54% → 77%, with zero
+fabricated quotes. It also exposed that the evaluation metric rewards answering
+with wrong evidence over honestly declining - see [PROGRESS.md](PROGRESS.md).
+The Claude backend remains untested. Without a key the app answers with filing
 excerpts and says so in the status line.
 
 ### Still open

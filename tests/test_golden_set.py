@@ -75,12 +75,26 @@ def _answer(question: str, corpus: list[dict], generator=None) -> dict:
     )
 
 
+def _is_gap(case: dict, generating: bool) -> bool:
+    """Is this case expected to fail in the mode we are running in?
+
+    Some cases retrieval cannot get right but a reading model can. They are
+    gaps without a generator and must pass with one - that difference is what
+    the generation step is worth.
+    """
+    if case.get("known_gap"):
+        return True
+    return bool(case.get("known_gap_without_generation")) and not generating
+
+
 @pytest.mark.parametrize(
     "case",
     [case for case in _cases() if not case.get("known_gap")],
     ids=lambda case: case["question"][:48],
 )
 def test_golden_case_matches_expected_support(case, indexed_corpus, generator):
+    if _is_gap(case, generator is not None):
+        pytest.skip("known to need generation; not configured")
     result = _answer(case["question"], indexed_corpus, generator)
     expected_supported = case["expect"] == "supported"
 
@@ -120,7 +134,7 @@ def test_known_gaps_are_still_recorded_as_gaps(indexed_corpus, generator):
     fixed = [
         case["question"]
         for case in _cases()
-        if case.get("known_gap")
+        if _is_gap(case, generator is not None)
         and _answer(case["question"], indexed_corpus, generator)["supported"]
         is (case["expect"] == "supported")
     ]

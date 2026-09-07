@@ -22,7 +22,9 @@
     "",
     "'portable' marks a case whose expectation holds for any US filer, so it can be scored against a different company with `python evaluate.py --ticker AAPL`. Cases naming this company's drug, and 'How many patents does Apple hold?' (a fair question when the loaded company is Apple), are deliberately not portable.",
     "",
-    "'question_class: exact_identifier' marks questions that name a filing section or form rather than describing a topic. They are the case the lexical half of hybrid retrieval was kept for, and were added after a proposed change scored better on every other case while silently breaking this one."
+    "'question_class: exact_identifier' marks questions that name a filing section or form rather than describing a topic. They are the case the lexical half of hybrid retrieval was kept for, and were added after a proposed change scored better on every other case while silently breaking this one.",
+    "",
+    "'known_gap_without_generation' marks a case retrieval alone gets wrong but a model reading the evidence gets right. It is a failure in extractive mode and a pass in generation mode, so the suite expects different things depending on which is configured - that difference is the measurement."
   ],
   "corpus": {
     "ticker": "NVCT",
@@ -163,27 +165,30 @@
     {
       "question": "How many patents does Apple hold?",
       "expect": "abstain",
-      "known_gap": true,
-      "gap_class": "subject_mismatch",
       "why": "About a different company.",
-      "gap_reason": "The filings do discuss patents, so retrieval finds real, on-topic-looking evidence. Nothing at the retrieval layer knows 'Apple' is not this registrant."
+      "gap_reason": "The filings do discuss patents, so retrieval finds real, on-topic-looking evidence. Nothing at the retrieval layer knows 'Apple' is not this registrant.",
+      "gap_reason_resolved": "Closed by generation (subject_mismatch). Retrieval still hands over the same topically-plausible evidence - it cannot do otherwise - but the model reads it and reports that it is about a different subject, or does not state the fact asked for. Verified with gemini-3.6-flash on 2026-09-06.",
+      "known_gap_without_generation": true,
+      "gap_class": "subject_mismatch"
     },
     {
       "question": "What is the CEO home address?",
       "expect": "abstain",
-      "known_gap": true,
-      "gap_class": "subject_mismatch",
       "why": "Not disclosed; only the corporate address is.",
       "gap_reason": "An address is present in the filing, so retrieval cannot distinguish 'an address' from 'the CEO's home address'.",
-      "portable": true
+      "portable": true,
+      "gap_reason_resolved": "Closed by generation (subject_mismatch). Retrieval still hands over the same topically-plausible evidence - it cannot do otherwise - but the model reads it and reports that it is about a different subject, or does not state the fact asked for. Verified with gemini-3.6-flash on 2026-09-06.",
+      "known_gap_without_generation": true,
+      "gap_class": "subject_mismatch"
     },
     {
       "question": "When will the FDA approve NXP900?",
       "expect": "abstain",
-      "known_gap": true,
-      "gap_class": "fact_not_stated",
       "why": "No approval date exists or is disclosed; the drug is in trials.",
-      "gap_reason": "Risk Factors discuss FDA approval at length without stating any date. Retrieval sees a dense topical match and cannot tell that the specific fact is absent."
+      "gap_reason": "Risk Factors discuss FDA approval at length without stating any date. Retrieval sees a dense topical match and cannot tell that the specific fact is absent.",
+      "gap_reason_resolved": "Closed by generation (fact_not_stated). Retrieval still hands over the same topically-plausible evidence - it cannot do otherwise - but the model reads it and reports that it is about a different subject, or does not state the fact asked for. Verified with gemini-3.6-flash on 2026-09-06.",
+      "known_gap_without_generation": true,
+      "gap_class": "fact_not_stated"
     },
     {
       "question": "How much did the company spend on advertising?",

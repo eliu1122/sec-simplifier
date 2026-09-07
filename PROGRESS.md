@@ -13,9 +13,11 @@ this disclosed"* when the filings don't support an answer.
   thresholds do not generalize, and no distance floor separates the two classes
   on five of the six. See
   [the generalization finding](#what-a-second-company-revealed-the-thresholds-do-not-generalize-).
-- The Claude generation step — the only component that reads evidence rather
-  than scoring vocabulary, and so the only remaining mechanism that could fix
-  abstention — **has still never run.** There is no API key on this machine.
+- **Generation has now run** (Gemini free tier, 2026-09-06) and closes three of
+  the recorded gaps, including both `subject_mismatch` cases. Specificity on
+  NVCT went 54% → 77%. It also revealed that the evaluation metric had been
+  rewarding wrong answers. See
+  [the generation result](#generation-run-what-reading-the-evidence-actually-did).
 
 - Detailed setup and run instructions: [README.md](README.md)
 - Active code lives in this folder (`sec-simplifier/`). `../edgar_copilot/` is a
@@ -679,19 +681,110 @@ of one filer.
 
 ---
 
+## Generation run: what reading the evidence actually did 🟢
+
+Run on **2026-09-06** against NVCT's 30 cases, using Gemini `gemini-3.6-flash`
+through AI Studio's free tier. The Claude backend remains untested.
+
+### The core hypothesis held
+
+Three recorded gaps closed, including **both** `subject_mismatch` cases — the
+ones no distance threshold could ever have caught:
+
+| Question | What the model said |
+| --- | --- |
+| How many patents does Apple hold? | recognised the evidence is this registrant's patents, not Apple's |
+| What is the CEO home address? | recognised the address present is corporate, not a home |
+| When will the FDA approve NXP900? | Risk Factors discuss approval at length without stating a date |
+
+And the case that started the whole investigation, on Apple:
+
+> *"The provided evidence mentions that the company reports progress toward
+> environmental and climate goals, but it does not state what the specific carbon
+> emissions target is."*
+
+That evidence sits at cosine distance **0.530** — closer than several questions
+that genuinely should be answered. Retrieval could not have rejected it at any
+threshold. The model read it and separated *relevant* from *contains the answer*.
+
+**Specificity on NVCT: 54% → 77%** (7/13 → 10/13). Zero fabricated quotes: the
+verification layer never had to fire.
+
+### The complication: the metric was rewarding wrong answers
+
+Recall fell from 17/17 to 13/17, which looks like a straight regression. It is
+not, or not entirely. Two of the four:
+
+- **"What stock exchange is the company listed on?"** — the model abstained
+  saying the evidence does not mention a stock exchange. **It is right.** This is
+  the `section_known_gap` recorded in Week 6: retrieval never surfaces `Item 5`,
+  which holds "listed on the NASDAQ Capital Market". In extractive mode this
+  scored as a *success* — it returned beneficial-ownership sections with
+  `supported = true`. It was bluffing with the wrong evidence and the metric
+  counted it as correct.
+- **"Who are the executive officers and what are they paid?"** — abstained
+  because the evidence named the officers but contained no compensation figures.
+  A compound question, half-answerable from what retrieval supplied. Refusing is
+  defensible.
+
+So generation is being penalised for honesty, by a metric that only asks
+*did it answer* and *is the section right* — never *is the answer correct*. This
+is exactly the "support" metric recorded as missing since Week 6, and it now has
+a concrete demonstration rather than a theoretical one.
+
+### Free-tier constraints, learned the hard way
+
+| Limit | Value |
+| --- | --- |
+| Requests per minute | 5 |
+| **Requests per day, per model** | **20** |
+| Availability | intermittent 503s under load |
+
+A 30-case run does not fit in one model's daily quota, so both runs were
+partly contaminated by silent fallbacks before pacing and retry were added.
+`MIN_SECONDS_BETWEEN_REQUESTS` and 429 retry now handle the per-minute limit;
+the per-day limit means a full six-company sweep needs either several days, a
+paid key, or splitting across models (which would not be a clean comparison).
+
+### Three bugs only running it could find
+
+All were masked by `_generated_answer` swallowing exceptions and falling back
+silently, so every question looked disappointing rather than never having
+reached the model:
+
+1. The SDK's `Models` helper does not keep its parent `Client` alive, so a
+   client left as a temporary was garbage-collected mid-request.
+2. `gemini-2.5-flash` appears in `models.list()` but 404s for new keys. Listing
+   is not access.
+3. The daily and per-minute quotas above.
+
+The fallback now logs. That one line surfaced (2) and (3) within seconds.
+
+---
+
 ## Known weaknesses / open risks
 
-- **Week 5's live path has never run.** No API key on this machine. The wiring,
-  verification, and fallback are unit-tested against fakes; Claude's actual
-  judgement on these filings is unverified. This is the largest open risk in the
-  project, and every measurement below is therefore extractive-mode only.
+- **The evaluation metric rewards wrong answers.** It asks whether the system
+  answered and whether the section is right, never whether the answer is
+  correct. Extractive mode scored a "success" on the stock-exchange question by
+  citing beneficial-ownership sections; generation scored a "failure" by
+  correctly refusing that same evidence. Until a support metric exists, the
+  headline numbers understate generation and flatter retrieval.
+- **Only NVCT has been scored with generation**, and only on Gemini. The free
+  tier's 20-requests-per-day-per-model limit makes a six-company sweep a
+  multi-day exercise. The Claude backend has still never run.
+- **Recall under generation needs re-measuring** once a support metric exists.
+  17/17 → 13/17 is partly the model being right about bad evidence and partly
+  genuine over-abstention on compound questions; the current metric cannot
+  separate those.
 - **Specificity is 46%.** Seven of 26 golden-set questions are answered when they
   should be declined. Every failure is of this kind — the system has never
   wrongly refused. Retrieval cannot fix these; all seven are recorded with a
   diagnosis and a class.
 - **Verification proves a quote is real, not that it supports the claim.** A
   model could quote accurately and still draw a conclusion the quote does not
-  license. Measuring that needs a judge, and is not built.
+  license. Measuring that needs a judge, and is not built - and the generation
+  run showed the cost of its absence is larger than it looked.
 - **Cost per question is real.** Every answered question is an Opus 5 call with
   several thousand tokens of evidence. The system prompt is cached; the evidence
   is not, and cannot be, since it differs per question. No per-session budget.
