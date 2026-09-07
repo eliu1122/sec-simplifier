@@ -96,8 +96,15 @@ def format_cost(usage: dict) -> str:
 
 
 def describe() -> str:
-    """One line naming the backend and model, for status lines and reports."""
+    """What is *configured*, for a status line before any question is asked.
+
+    Deliberately phrased as intent rather than fact. A configured backend can
+    still be out of quota or unreachable, so claiming answers "are written by"
+    it would overstate - which is precisely the failure mode this project
+    exists to avoid. What actually happened is reported per answer, from the
+    `generated` and `generation_error` fields on the response.
+    """
     name, module = active_backend()
     if module is None:
-        return "answers excerpted from filings (no generation backend configured)"
-    return f"answers written by {name} ({module.DEFAULT_MODEL}) from cited evidence"
+        return "generation off - answers excerpted from filings"
+    return f"generation enabled ({name} {module.DEFAULT_MODEL})"

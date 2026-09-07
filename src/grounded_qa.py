@@ -554,6 +554,31 @@ def _why_it_matters(section: str, question: str) -> str:
 UNSUPPORTED_ANSWER = "I don't see this disclosed in the filings available for this company."
 
 
+class GenerationUnavailable(Exception):
+    """The generator could not be reached. Carries a reason worth showing."""
+
+
+def describe_generation_failure(error: Exception) -> str:
+    """Turn an API error into something a reader can act on.
+
+    The distinction that matters is between "you have run out for today" and
+    "something is broken" - the first is expected on a free tier and resolves on
+    its own, the second needs attention.
+    """
+    text = str(error)
+    if "PerDay" in text or "per day" in text.lower():
+        return "daily free-tier quota reached"
+    if "429" in text or "RESOURCE_EXHAUSTED" in text:
+        return "rate limited"
+    if "503" in text or "UNAVAILABLE" in text:
+        return "the model is temporarily unavailable"
+    if "401" in text or "403" in text or "API key" in text or "PERMISSION" in text:
+        return "the API key was rejected"
+    if "404" in text or "NOT_FOUND" in text:
+        return "the configured model was not found"
+    return "the generation service could not be reached"
+
+
 def _unsupported(why: str) -> dict[str, Any]:
     return {
         "answer": UNSUPPORTED_ANSWER,
@@ -561,6 +586,10 @@ def _unsupported(why: str) -> dict[str, Any]:
         "citations": [],
         "evidence": [],
         "why_it_matters": why,
+        # Retrieval declined before any model was consulted. Overridden by the
+        # caller when a generator made the decision instead.
+        "generated": False,
+        "generation_error": "",
     }
 
 
@@ -587,7 +616,9 @@ def _generated_answer(
             type(error).__name__,
             error,
         )
-        return None
+        # The caller attaches this to the extractive answer, so the UI can say
+        # which mode actually produced what the reader is looking at.
+        raise GenerationUnavailable(describe_generation_failure(error)) from error
 
     if not result.get("supported"):
         abstained = _unsupported(
@@ -653,10 +684,15 @@ def answer_question(
             "Try a broader question or add more filings before drawing a conclusion."
         )
 
+    # Why generation did not produce this answer, when a generator was offered.
+    # Carried on the response so the UI reports the mode that actually ran
+    # rather than the mode that was configured.
+    generation_error = ""
     if generator is not None:
-        generated = _generated_answer(question, supporting, generator)
-        if generated is not None:
-            return generated
+        try:
+            return _generated_answer(question, supporting, generator)
+        except GenerationUnavailable as unavailable:
+            generation_error = str(unavailable)
 
     best = supporting[0]
     answer = f"Based on {best['section']} and related filing text, the company states: {best['text'][:300]}"
@@ -680,4 +716,6 @@ def answer_question(
         "citations": citations,
         "evidence": evidence,
         "why_it_matters": _why_it_matters(best["section"], question),
+        "generated": False,
+        "generation_error": generation_error,
     }

@@ -214,6 +214,77 @@ def test_generator_cannot_answer_when_retrieval_found_nothing():
     assert result["supported"] is False
 
 
+# --- Reporting which mode actually produced an answer -----------------------
+#
+# The status line used to report what was *configured* rather than what ran, so
+# it kept claiming answers were model-written after the daily quota was gone.
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("429 RESOURCE_EXHAUSTED ... GenerateRequestsPerDayPerProjectPerModel-FreeTier", "daily free-tier quota reached"),
+        ("429 RESOURCE_EXHAUSTED quota per minute", "rate limited"),
+        ("503 UNAVAILABLE model is overloaded", "the model is temporarily unavailable"),
+        ("401 Unauthorized: invalid API key", "the API key was rejected"),
+        ("404 NOT_FOUND: model not available", "the configured model was not found"),
+        ("something else entirely", "the generation service could not be reached"),
+    ],
+)
+def test_failures_are_described_in_terms_a_reader_can_act_on(message, expected):
+    from src.grounded_qa import describe_generation_failure
+
+    assert describe_generation_failure(RuntimeError(message)) == expected
+
+
+def test_a_generated_answer_says_so():
+    corpus = _corpus()
+    verified = {
+        "chunk_id": "acc:liquidity:0", "quote": "fund operations into the second quarter of 2027",
+        "section": "Item 7. Liquidity", "form": "10-K", "filing_date": "2026-02-11",
+        "period_of_report": "2025-12-31", "source_url": "https://example.com/liquidity",
+    }
+    generator = _generator({
+        "supported": True, "answer": "The company expects cash into Q2 2027.",
+        "citations": [verified], "rejected_citations": [], "reason": "",
+    })
+
+    result = answer_question("What is the cash runway?", corpus, _vector_hits(), generator=generator)
+
+    assert result["generated"] is True
+
+
+def test_quota_exhaustion_is_reported_rather_than_hidden():
+    """The whole point: an excerpt must not be presented as a written answer."""
+    def exhausted(question, evidence):
+        raise RuntimeError(
+            "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: "
+            "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+        )
+
+    result = answer_question("What is the cash runway?", _corpus(), _vector_hits(), generator=exhausted)
+
+    assert result["supported"] is True          # still answered, extractively
+    assert result["generated"] is False         # but not by a model
+    assert result["generation_error"] == "daily free-tier quota reached"
+
+
+def test_no_generator_reports_no_error():
+    """Extractive by choice is not a failure, and must not read like one."""
+    result = answer_question("What is the cash runway?", _corpus(), _vector_hits())
+
+    assert result["generated"] is False
+    assert result["generation_error"] == ""
+
+
+def test_retrieval_abstention_is_not_attributed_to_a_model():
+    result = answer_question("What is the price of Bitcoin?", _corpus(), generator=_generator({}))
+
+    assert result["supported"] is False
+    assert result["generated"] is False
+    assert result["generation_error"] == ""
+
+
 def test_generator_failure_falls_back_to_the_extractive_answer():
     def exploding(question, evidence):
         raise RuntimeError("API unavailable")
