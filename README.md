@@ -411,6 +411,33 @@ CITATIONS
   cited the expected section   4/5       80%
 ```
 
+A fourth group, **correctness**, asks whether the answer actually states the
+fact - because without it the scoring rewarded confident wrong answers over
+honest refusals. Ten cases record a fact that must appear in the answer, each
+checked against NVCT's filings before being asserted:
+
+```json
+{
+  "question": "What stock exchange is the company listed on?",
+  "expect": "supported",
+  "expect_answer_contains": ["NASDAQ"]
+}
+```
+
+This inverted the comparison between the two modes. Over the same ten questions:
+
+| | correct answers | confidently wrong | honestly declined |
+| --- | --- | --- | --- |
+| extractive | 4 | **6** | 0 |
+| generation | **6** | 1 | 3 |
+
+Extractive answers every question and gets 4 right. Generation answers seven and
+gets 6 right. The old scoring preferred extractive, because it only counted
+whether an answer came back.
+
+`--only-checkable` scores just those ten, which is ten API calls rather than
+thirty - and matters on a free tier capped at 20 per day.
+
 Answering and declining are reported separately because they fail
 independently - and here they fail very differently. The system answers
 everything it should; it declines less than half of what it should. All seven

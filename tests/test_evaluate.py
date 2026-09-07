@@ -169,3 +169,107 @@ def test_the_set_covers_every_form_and_both_expectations():
     # The proxy statement was silently reduced to 2 chunks until Week 6; keep
     # cases that would catch that regression.
     assert any(case.get("form_hint") == "DEF 14A" for case in cases)
+
+
+# --- Correctness: does the answer state the fact? ---------------------------
+#
+# Added after the generation run showed the scoring rewarded confident wrong
+# answers over honest refusals. Without this, a response citing the wrong
+# section scored identically to one citing the right one.
+
+
+def _result(supported=True, answer=""):
+    return {"supported": supported, "answer": answer, "evidence": [], "citations": []}
+
+
+def test_an_answer_stating_the_fact_passes():
+    import evaluate
+
+    case = {"expect_answer_contains": ["NASDAQ"]}
+    result = _result(answer="The company's shares trade on the NASDAQ under NVCT.")
+
+    assert evaluate.answer_states_the_fact(case, result, home=True) is True
+
+
+def test_an_answer_missing_the_fact_fails():
+    """The case this metric exists for: confident, cited, and wrong."""
+    import evaluate
+
+    case = {"expect_answer_contains": ["NASDAQ"]}
+    result = _result(answer="Based on Item 12, the company states: beneficial ownership of...")
+
+    assert evaluate.answer_states_the_fact(case, result, home=True) is False
+
+
+def test_any_one_listed_fact_is_enough():
+    """Spelling and phrasing vary; the fact is what matters."""
+    import evaluate
+
+    case = {"expect_answer_contains": ["Kesselman", "PricewaterhouseCoopers", "PwC"]}
+
+    assert evaluate.answer_states_the_fact(case, _result(answer="Audited by PwC."), home=True)
+    assert evaluate.answer_states_the_fact(
+        case, _result(answer="Kesselman & Kesselman audits them."), home=True
+    )
+
+
+def test_matching_ignores_case():
+    import evaluate
+
+    case = {"expect_answer_contains": ["NASDAQ"]}
+
+    assert evaluate.answer_states_the_fact(case, _result(answer="listed on Nasdaq"), home=True)
+
+
+def test_a_declined_answer_is_not_scored_for_correctness():
+    """Abstention is judged by the answer-rate metric, not this one."""
+    import evaluate
+
+    case = {"expect_answer_contains": ["NASDAQ"]}
+
+    assert evaluate.answer_states_the_fact(case, _result(supported=False), home=True) is None
+
+
+def test_facts_are_not_asserted_against_another_company():
+    """The recorded facts are NVCT's; JPM is not on NASDAQ."""
+    import evaluate
+
+    case = {"expect_answer_contains": ["NASDAQ"]}
+    result = _result(answer="The company's shares trade on the NYSE.")
+
+    assert evaluate.answer_states_the_fact(case, result, home=False) is None
+
+
+def test_a_case_with_no_recorded_fact_is_skipped():
+    import evaluate
+
+    assert evaluate.answer_states_the_fact({}, _result(answer="anything"), home=True) is None
+
+
+def test_summarize_counts_only_checkable_cases():
+    import evaluate
+
+    rows = [
+        _row(True, True, fact_hit=True),
+        _row(True, True, fact_hit=False),
+        _row(True, True, fact_hit=None),   # no fact recorded
+        _row(False, False, fact_hit=None),  # declined
+    ]
+
+    stats = evaluate.summarize(rows)
+
+    assert stats["fact_checked"] == 2
+    assert stats["fact_hits"] == 1
+
+
+def test_every_recorded_fact_is_a_non_empty_string():
+    """A blank or non-string fact would match everything and prove nothing."""
+    for case in _cases():
+        for fact in case.get("expect_answer_contains", []):
+            assert isinstance(fact, str) and fact.strip(), case["question"]
+
+
+def test_recorded_facts_only_appear_on_cases_expected_to_answer():
+    for case in _cases():
+        if case.get("expect_answer_contains"):
+            assert case["expect"] == "supported", case["question"]

@@ -8,6 +8,7 @@ Reports three things, because they fail independently:
 
   Answer rate    - does it answer what it should, and decline what it should?
   Citations      - when it answers, does it cite, and from the right section?
+  Correctness    - does the answer actually state the fact that was asked for?
   Grounding      - are the cited quotes actually present in the filing?
 
 Baselines are stored in tests/eval_baseline.json and compared on every run, so a
@@ -59,7 +60,27 @@ def load_corpus_and_generator(use_generator: bool, ticker: str | None = None):
     return corpus, generator
 
 
-def score_case(case: dict, corpus: list[dict], generator, ticker: str | None = None) -> dict:
+def answer_states_the_fact(case: dict, result: dict, home: bool) -> bool | None:
+    """Does the answer actually contain the fact the case says it should?
+
+    None when the question is not checkable this way - no fact recorded, the
+    system declined, or we are scoring a company the facts were not written
+    for. The facts are NVCT's, so they are only asserted against NVCT.
+
+    This is the check whose absence let a confident wrong answer outscore an
+    honest refusal: without it, scoring asked only whether the system answered
+    and whether the section matched.
+    """
+    wanted = case.get("expect_answer_contains")
+    if not wanted or not home or not result["supported"]:
+        return None
+    answer = (result.get("answer") or "").lower()
+    return any(str(fact).lower() in answer for fact in wanted)
+
+
+def score_case(
+    case: dict, corpus: list[dict], generator, ticker: str | None = None, home: bool = True
+) -> dict:
     """Run one case and record what happened, without judging it yet."""
     from src.vector_store import query_vector_store
 
@@ -91,6 +112,7 @@ def score_case(case: dict, corpus: list[dict], generator, ticker: str | None = N
             else None
         ),
         "section_known_gap": bool(case.get("section_known_gap")),
+        "fact_hit": answer_states_the_fact(case, result, home),
         # Only the generator produces verifiable quotes; the extractive path
         # returns a slice of the chunk, which is grounded by construction.
         "rejected_quotes": len(result.get("rejected_citations") or []),
@@ -122,6 +144,8 @@ def summarize(rows: list[dict]) -> dict:
         "answers": len(answered),
         "section_hits": sum(1 for r in with_wanted_section if r["section_hit"]),
         "section_checked": len(with_wanted_section),
+        "fact_hits": sum(1 for r in rows if r.get("fact_hit")),
+        "fact_checked": sum(1 for r in rows if r.get("fact_hit") is not None),
         "rejected_quotes": sum(r["rejected_quotes"] for r in rows),
         "open_gaps": sum(1 for r in rows if r["known_gap"] and not r["correct"]),
         "gaps_recorded": sum(1 for r in rows if r["known_gap"]),
@@ -151,6 +175,14 @@ def report(rows: list[dict], stats: dict, baseline: dict | None, mode: str) -> N
     section_gaps = [r for r in rows if r["section_known_gap"] and r["section_hit"] is False]
     for row in section_gaps:
         print(f"    known ranking gap: {row['question'][:48]}")
+
+    if stats["fact_checked"]:
+        print("\nCORRECTNESS")
+        print(f"  answer states the expected fact {stats['fact_hits']:>3}/{stats['fact_checked']:<3}  "
+              f"{percent(stats['fact_hits'], stats['fact_checked'])}")
+        for row in rows:
+            if row.get("fact_hit") is False:
+                print(f"    answered without the fact: {row['question'][:44]}")
 
     print("\nGROUNDING")
     if any(r["generated"] for r in rows):
@@ -184,6 +216,7 @@ def report(rows: list[dict], stats: dict, baseline: dict | None, mode: str) -> N
             ("overall", "correct", "cases"),
             ("declined when it should", "declined_when_expected", "declined_total"),
             ("cited expected section", "section_hits", "section_checked"),
+            ("answer states the fact", "fact_hits", "fact_checked"),
         ]:
             was, now = previous.get(key), stats[key]
             if was is None:
@@ -197,8 +230,14 @@ def report(rows: list[dict], stats: dict, baseline: dict | None, mode: str) -> N
     spent = sum(r["usage"].get("input_tokens", 0) for r in rows)
     produced = sum(r["usage"].get("output_tokens", 0) for r in rows)
     if spent:
-        cost = spent * 5.00 / 1_000_000 + produced * 25.00 / 1_000_000
-        print(f"\n  {spent:,} in / {produced:,} out tokens - about ${cost:.2f}")
+        from src import backend
+
+        # Priced by whichever backend actually ran. Hardcoding one
+        # backend's rates reported a charge for calls that were free.
+        model = next((r["usage"].get("model", "") for r in rows if r["usage"]), "")
+        print("")
+        print("  " + backend.format_cost(
+            {"input_tokens": spent, "output_tokens": produced, "model": model}))
     print()
 
 
@@ -208,6 +247,14 @@ def main() -> None:
                         help="Retrieval only - no API calls, no cost.")
     parser.add_argument("--save-baseline", action="store_true",
                         help="Record this run as the baseline future runs compare against.")
+    parser.add_argument(
+        "--only-checkable",
+        action="store_true",
+        help=(
+            "Score only the cases with a recorded fact. Ten calls rather than "
+            "thirty, which matters on a free tier capped at 20 per day."
+        ),
+    )
     parser.add_argument(
         "--ticker",
         help=(
@@ -240,7 +287,13 @@ def main() -> None:
     else:
         mode = f"{ticker} - hybrid retrieval, extractive answers (no generation)"
 
-    rows = [score_case(case, corpus, generator, ticker) for case in cases]
+    if args.only_checkable:
+        cases = [case for case in cases if case.get("expect_answer_contains")]
+        if not cases:
+            raise SystemExit("No cases carry expect_answer_contains.")
+
+    home = ticker == home_ticker
+    rows = [score_case(case, corpus, generator, ticker, home) for case in cases]
     stats = summarize(rows)
 
     baseline = None
@@ -249,8 +302,10 @@ def main() -> None:
 
     report(rows, stats, baseline, mode)
 
-    if args.save_baseline and args.ticker and ticker != home_ticker:
-        raise SystemExit("Baselines are only recorded for the golden set's own company.")
+    if args.save_baseline and (args.only_checkable or (args.ticker and ticker != home_ticker)):
+        raise SystemExit(
+            "Baselines are only recorded for a full run against the golden set's own company."
+        )
 
     if args.save_baseline:
         BASELINE_PATH.write_text(

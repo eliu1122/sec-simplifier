@@ -24,7 +24,9 @@
     "",
     "'question_class: exact_identifier' marks questions that name a filing section or form rather than describing a topic. They are the case the lexical half of hybrid retrieval was kept for, and were added after a proposed change scored better on every other case while silently breaking this one.",
     "",
-    "'known_gap_without_generation' marks a case retrieval alone gets wrong but a model reading the evidence gets right. It is a failure in extractive mode and a pass in generation mode, so the suite expects different things depending on which is configured - that difference is the measurement."
+    "'known_gap_without_generation' marks a case retrieval alone gets wrong but a model reading the evidence gets right. It is a failure in extractive mode and a pass in generation mode, so the suite expects different things depending on which is configured - that difference is the measurement.",
+    "",
+    "'expect_answer_contains' lists facts, any one of which must appear in the answer text (case-insensitive). Without it the scoring asked only whether the system answered and whether the section was right - never whether the answer was correct - so citing the wrong section confidently scored better than honestly declining. Each listed fact was checked to appear in NVCT's filings before being asserted. Company-specific, so it is only scored against the golden set's own ticker, not under --ticker."
   ],
   "corpus": {
     "ticker": "NVCT",
@@ -42,7 +44,13 @@
       "expect": "supported",
       "why": "Liquidity is disclosed in MD&A and on the balance sheet.",
       "lexical_alone": "abstains - the filing says 'funds', not 'cash on hand'",
-      "portable": true
+      "portable": true,
+      "expect_answer_contains": [
+        "31.6",
+        "22,160",
+        "31,634",
+        "22.2"
+      ]
     },
     {
       "question": "What could go wrong with the business?",
@@ -56,25 +64,40 @@
       "question": "Who are the executive officers and what are they paid?",
       "expect": "supported",
       "why": "Compensation tables appear in both the 10-K and the proxy.",
-      "portable": true
+      "portable": true,
+      "expect_answer_contains": [
+        "Bentsur"
+      ]
     },
     {
       "question": "Has the company ever made a profit?",
       "expect": "supported",
       "why": "Accumulated deficit and operating losses are disclosed.",
       "lexical_alone": "abstains - 'profit' does not appear as such",
-      "portable": true
+      "portable": true,
+      "expect_answer_contains": [
+        "accumulated deficit",
+        "net loss",
+        "loss"
+      ]
     },
     {
       "question": "Describe the drug pipeline and clinical trials",
       "expect": "supported",
-      "why": "Core business description for a clinical-stage pharma company."
+      "why": "Core business description for a clinical-stage pharma company.",
+      "expect_answer_contains": [
+        "NXP900"
+      ]
     },
     {
       "question": "Are there any pending lawsuits?",
       "expect": "supported",
       "why": "Legal proceedings are disclosed, including when the answer is 'none'.",
-      "portable": true
+      "portable": true,
+      "expect_answer_contains": [
+        "not a party",
+        "legal proceedings"
+      ]
     },
     {
       "question": "What stock exchange is the company listed on?",
@@ -83,13 +106,21 @@
       "section_known_gap": true,
       "why": "Disclosed on the cover page and in Item 5.",
       "section_gap_reason": "Item 5 holds the literal sentence ('Our common stock is listed on the NASDAQ Capital Market'), but it lands at fusion rank 4-5: lexical rank 7, vector rank 13 at distance 0.593. Beneficial-ownership sections in the 10-K and proxy share the words 'stock' and 'listed' and outrank it. Neither a wider vector pool, a different BM25 length-normalization constant, nor per-section diversity moved it into the top 3 - all three were swept against this file and changed nothing. The answer is still supported and cited; only the section is wrong.",
-      "portable": true
+      "portable": true,
+      "expect_answer_contains": [
+        "NASDAQ"
+      ]
     },
     {
       "question": "Who audits the financial statements?",
       "expect": "supported",
       "why": "The auditor's report names the firm.",
-      "portable": true
+      "portable": true,
+      "expect_answer_contains": [
+        "Kesselman",
+        "PricewaterhouseCoopers",
+        "PwC"
+      ]
     },
     {
       "question": "Who serves on the board of directors?",
@@ -97,7 +128,10 @@
       "expect_section_contains": "CORPORATE GOVERNANCE",
       "form_hint": "DEF 14A",
       "why": "Director biographies are a required proxy disclosure.",
-      "portable": true
+      "portable": true,
+      "expect_answer_contains": [
+        "Bentsur"
+      ]
     },
     {
       "question": "Were there any related party transactions?",
@@ -112,7 +146,11 @@
       "expect": "supported",
       "form_hint": "DEF 14A",
       "why": "The proxy exists to describe the proposals.",
-      "portable": true
+      "portable": true,
+      "expect_answer_contains": [
+        "elect",
+        "ratify"
+      ]
     },
     {
       "question": "What is the CEO annual salary?",
@@ -125,7 +163,11 @@
     {
       "question": "Did the company sell shares under an at-the-market program?",
       "expect": "supported",
-      "why": "The ATM program is described in the 10-K, the 10-Q, and an 8-K."
+      "why": "The ATM program is described in the 10-K, the 10-Q, and an 8-K.",
+      "expect_answer_contains": [
+        "at-the-market",
+        "ATM"
+      ]
     },
     {
       "question": "What is the price of Bitcoin?",

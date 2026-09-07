@@ -1,6 +1,6 @@
 # SEC Simplifier — Build Progress
 
-Status as of **2026-09-06**. All six roadmap weeks are built, and the app has
+Status as of **2026-09-07**. All six roadmap weeks are built, and the app has
 since been opened up from one hard-coded ticker to any US company searched on
 demand. It answers natural-language questions from a chosen company's EDGAR
 filings, shows the supporting excerpt and source link, and says *"I don't see
@@ -13,11 +13,14 @@ this disclosed"* when the filings don't support an answer.
   thresholds do not generalize, and no distance floor separates the two classes
   on five of the six. See
   [the generalization finding](#what-a-second-company-revealed-the-thresholds-do-not-generalize-).
-- **Generation has now run** (Gemini free tier, 2026-09-06) and closes three of
-  the recorded gaps, including both `subject_mismatch` cases. Specificity on
-  NVCT went 54% → 77%. It also revealed that the evaluation metric had been
-  rewarding wrong answers. See
+- **Generation has now run** (Gemini free tier) and closes three recorded gaps,
+  including both `subject_mismatch` cases. See
   [the generation result](#generation-run-what-reading-the-evidence-actually-did).
+- **The scoring was measuring the wrong thing**, and fixing it inverted the
+  comparison. On the ten cases with a recorded fact, extractive answers all ten
+  and gets **4** right; generation answers seven and gets **6** right, with a
+  sixth as many confidently wrong. See
+  [the correctness metric](#the-correctness-metric-and-what-it-changed-).
 
 - Detailed setup and run instructions: [README.md](README.md)
 - Active code lives in this folder (`sec-simplifier/`). `../edgar_copilot/` is a
@@ -761,14 +764,85 @@ The fallback now logs. That one line surfaced (2) and (3) within seconds.
 
 ---
 
+## The correctness metric, and what it changed 🟢
+
+Added **2026-09-07**, after the generation run showed the scoring could not tell
+a right answer from a confident wrong one.
+
+Ten cases now record `expect_answer_contains` - facts, any one of which must
+appear in the answer text. Each was checked against NVCT's filings before being
+asserted. The CEO-salary case was dropped: only RSA grants are disclosed, not a
+salary figure, so the check would have tested nothing.
+
+### The old metric was measuring the wrong thing
+
+Scored over the same ten questions:
+
+| | answered | stated the fact |
+| --- | --- | --- |
+| extractive | 10/10 · 100% | **4/10 · 40%** |
+| generation | 7/10 · 70% | **6/7 · 86%** |
+
+Under the old scoring, extractive *won*: it answered every question and
+generation refused three. Counting what the reader actually receives inverts it:
+
+| | correct answers | confidently wrong | honestly declined |
+| --- | --- | --- | --- |
+| extractive | 4 | **6** | 0 |
+| generation | **6** | 1 | 3 |
+
+Generation returns **more correct answers and a sixth as many wrong ones.** The
+metric had been rewarding the mode that answered every question badly.
+
+Six extractive "successes" never contained what was asked - no cash figure, no
+mention of losses, never naming NXP900, no legal-proceedings language, never
+saying NASDAQ, no proposals. Each scored identically to a correct answer.
+
+### The three generation declined are all retrieval failures
+
+Each was checked against the evidence actually handed to the model. None is
+over-strictness:
+
+- *Who are the executive officers and what are they paid?* - a compound
+  question. The evidence named the officers without any pay figures.
+- *What stock exchange is the company listed on?* - the recorded ranking gap.
+  Retrieval never surfaces `Item 5`, which holds the sentence.
+- *Who serves on the board of directors?* - retrieval returned two chunks of
+  governance **policy** text plus a 552-character `Item 10` fragment. Exactly
+  one director's name appears in the whole of it. The proxy does carry the
+  biographies; retrieval did not fetch them.
+
+The last is the sharpest illustration that a section match is not correctness.
+The case asserts `expect_section_contains: CORPORATE GOVERNANCE` and retrieval
+**hit that section** - it simply picked the wrong chunks within it. The old
+scoring counted that as two successes: answered, and right section.
+
+So generation is not trading recall for precision here. It is reporting a
+retrieval problem that the extractive path concealed by answering anyway.
+
+### Scope and cost
+
+The facts are NVCT's, so they are only asserted against the home ticker - JPM is
+not on NASDAQ. `--only-checkable` scores just these ten, which is ten API calls
+rather than thirty and matters against a 20-per-day free tier.
+
+Also fixed: the run summary priced every call at Claude's rates whatever ran,
+reporting $0.13 for calls that were free. `backend.format_cost` was written for
+this and simply was not being called.
+
+---
+
 ## Known weaknesses / open risks
 
-- **The evaluation metric rewards wrong answers.** It asks whether the system
-  answered and whether the section is right, never whether the answer is
-  correct. Extractive mode scored a "success" on the stock-exchange question by
-  citing beneficial-ownership sections; generation scored a "failure" by
-  correctly refusing that same evidence. Until a support metric exists, the
-  headline numbers understate generation and flatter retrieval.
+- **Correctness is measured on 10 of 30 cases only.** The other twenty have no
+  recorded fact - "what could go wrong with the business?" has no single string
+  that proves a good answer. Those still score on answered/declined alone, so
+  the flattery the metric used to apply everywhere still applies to them.
+- **Three questions retrieval cannot supply evidence for**, now visible because
+  generation declines instead of answering anyway: the stock exchange (`Item 5`
+  never surfaces), the board roster (governance policy fetched instead of the
+  biographies), and executive pay (names without figures). All three are
+  ranking problems inside sections retrieval already identifies correctly.
 - **Only NVCT has been scored with generation**, and only on Gemini. The free
   tier's 20-requests-per-day-per-model limit makes a six-company sweep a
   multi-day exercise. The Claude backend has still never run.
