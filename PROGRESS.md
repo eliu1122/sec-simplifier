@@ -33,7 +33,7 @@ flowchart TD
     B["<b>2 · Ingestion &amp; chunking</b><br/>section-aware and table-aware splits<br/>bounded to 3,000 characters"]
     C["<b>3 · Vector store &amp; metadata</b><br/>Chroma · stable chunk IDs<br/>per-filing citation metadata"]
     D["<b>4 · Hybrid retrieval</b><br/>BM25 + vector search, RRF fusion<br/>two gates guard abstention"]
-    E["<b>5 · Claude orchestration</b><br/>writes the answer from the evidence<br/>every quote verified against source"]
+    E["<b>5 · Grounded generation</b><br/>reads the evidence and answers or declines<br/>every quote verified against source"]
     F["<b>6 · Cited answer + evaluation</b><br/>quotes the filing or flags the gap<br/>scored across six companies"]
 
     A --> B --> C --> D --> E --> F
@@ -42,8 +42,7 @@ flowchart TD
     classDef partial fill:#fff7e0,stroke:#9a6b00,color:#5a3d00;
     classDef planned fill:#eef2ff,stroke:#3f51b5,color:#22307a;
 
-    class A,B,C,D,F done;
-    class E partial;
+    class A,B,C,D,E,F done;
 ```
 
 **Legend** — 🟢 done · 🟡 partial (baseline in place, work remaining) · 🔵 planned
@@ -54,7 +53,7 @@ flowchart TD
 | 2 · Ingestion & chunking | 🟢 done — incl. proxy statements | [src/grounded_qa.py](src/grounded_qa.py), [src/tables.py](src/tables.py), [src/corpus.py](src/corpus.py) |
 | 3 · Vector store & metadata | 🟢 done | [src/vector_store.py](src/vector_store.py), [src/build_index.py](src/build_index.py) |
 | 4 · Hybrid retrieval | 🟢 done | [src/grounded_qa.py](src/grounded_qa.py), [app.py](app.py) |
-| 5 · Grounded generation (Claude) | 🟡 built and unit-tested; **live path unrun — needs an API key** | [src/generate.py](src/generate.py) |
+| 5 · Grounded generation | 🟢 run on Gemini, closes 3 gaps; Claude backend still untested | [src/generate.py](src/generate.py), [src/generate_gemini.py](src/generate_gemini.py) |
 | 6 · Cited answers & evaluation | 🟢 30 cases, scored across 6 companies, tracked baseline | [evaluate.py](evaluate.py), [tests/golden_set.json](tests/golden_set.json) |
 
 ---

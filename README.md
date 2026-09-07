@@ -57,7 +57,7 @@ account of what is built, what is pending, and the known weaknesses.
 | 2 | Ingestion and chunking | Parse downloaded filing HTML into section-aware chunks that retain ticker, form, filing date, document name, and SEC source URL. | Core complete - section-aware chunks are loaded into the app. |
 | 3 | Vector store and metadata | Persist chunks and metadata in Chroma, with a stable chunk ID, filing accession number, section, period, and source URL. | Complete - `src/build_index.py` writes a persistent Chroma store; every chunk carries a stable ID and full filing metadata. |
 | 4 | Hybrid retrieval | Combine lexical/keyword search with vector similarity search, then rerank the strongest evidence chunks. | Complete - table-aware chunking, BM25 + vector search fused with reciprocal rank fusion, two-gate abstention. Live in the app. |
-| 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Built on two backends (Claude, Gemini) sharing one contract. **Live path unrun: needs a key for either.** |
+| 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Complete - two backends sharing one contract. Run on Gemini: closes 3 recorded gaps, specificity 54% -> 77%. |
 | 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Complete - `evaluate.py` scores a 30-case set against a tracked baseline. 24/30 on NVCT; portable subset scored across 6 companies. |
 
 ### Current position
