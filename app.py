@@ -64,17 +64,17 @@ def search_vector_store(question: str, ticker: str) -> list[dict]:
 
 @lru_cache(maxsize=1)
 def active_generator():
-    """The Claude generator, or None when the SDK or credentials are missing."""
-    try:
-        from src import generate
+    """The configured generation backend, or None for extractive answers."""
+    from src import backend
 
-        if not generate.is_available():
-            return None
-        return lambda question, evidence: generate.generate_grounded_answer(
-            question, evidence
-        )
-    except ImportError:
-        return None
+    return backend.get_generator()
+
+
+@lru_cache(maxsize=1)
+def generation_mode() -> str:
+    from src import backend
+
+    return backend.describe()
 
 
 # --- On-demand company loading ---------------------------------------------
@@ -188,11 +188,7 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.OK, PAGE.encode(), "text/html; charset=utf-8")
         elif path == "/api/companies":
             companies = known_companies()
-            mode = (
-                "answers written from cited evidence"
-                if active_generator()
-                else "answers excerpted from filings"
-            )
+            mode = generation_mode()
             self._json(
                 HTTPStatus.OK,
                 {

@@ -38,10 +38,12 @@ The repo now has a minimal working MVP around the grounded Q&A loop:
 - [src/build_index.py](src/build_index.py): CLI that builds or refreshes the vector index
 - [src/company.py](src/company.py): resolves a ticker and ingests it on demand, with progress reporting
 - [src/generate.py](src/generate.py): Claude writes the answer from retrieved evidence, with every quote verified
+- [src/generate_gemini.py](src/generate_gemini.py): the same contract on Gemini's free tier
+- [src/backend.py](src/backend.py): picks whichever generation backend is configured
 - [evaluate.py](evaluate.py): scores the pipeline against the reviewed golden set, with baseline tracking
 - [tests/test_grounded_qa.py](tests/test_grounded_qa.py): chunking, retrieval, grounding, and vector-store contract tests
 - [tests/test_generate.py](tests/test_generate.py): quote verification and generation wiring, all offline
-- [tests/golden_set.json](tests/golden_set.json): 26 reviewed evaluation cases, with known gaps classified and explained
+- [tests/golden_set.json](tests/golden_set.json): 30 reviewed evaluation cases, with known gaps classified and explained
 - [tests/test_evaluate.py](tests/test_evaluate.py): the scoring harness's own arithmetic, and golden-set hygiene
 
 ## Six-week build roadmap
@@ -55,28 +57,26 @@ account of what is built, what is pending, and the known weaknesses.
 | 2 | Ingestion and chunking | Parse downloaded filing HTML into section-aware chunks that retain ticker, form, filing date, document name, and SEC source URL. | Core complete - section-aware chunks are loaded into the app. |
 | 3 | Vector store and metadata | Persist chunks and metadata in Chroma, with a stable chunk ID, filing accession number, section, period, and source URL. | Complete - `src/build_index.py` writes a persistent Chroma store; every chunk carries a stable ID and full filing metadata. |
 | 4 | Hybrid retrieval | Combine lexical/keyword search with vector similarity search, then rerank the strongest evidence chunks. | Complete - table-aware chunking, BM25 + vector search fused with reciprocal rank fusion, two-gate abstention. Live in the app. |
-| 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Built - structured output, verified quotes, abstention. **Live path unrun: needs an `ANTHROPIC_API_KEY`.** |
+| 5 | Grounded generation | Add Claude orchestration that answers only from retrieved evidence and can abstain when evidence is inadequate. | Built on two backends (Claude, Gemini) sharing one contract. **Live path unrun: needs a key for either.** |
 | 6 | Cited answers and evaluation | Show quoted evidence and source links in the UI; build a reviewed golden set and measure citation correctness, support, and abstention quality. | Complete - `evaluate.py` scores a 30-case set against a tracked baseline. 24/30 on NVCT; portable subset scored across 6 companies. |
 
 ### Current position
 
-All six weeks are built. The pipeline runs end to end: hybrid retrieval over the
-Chroma index feeds a Claude call that writes the answer from the retrieved
+All six weeks are built, and the app has since been opened up from one
+hard-coded ticker to any US company searched on demand. Retrieval over the
+Chroma index feeds a generation step that writes the answer from the retrieved
 evidence, every quote is checked against the source before it is shown, and
-`evaluate.py` scores the whole thing against 26 reviewed cases with a tracked
+`evaluate.py` scores the whole thing across six companies against a tracked
 baseline.
 
-**Measured, in extractive mode: 19/26.** Recall is perfect (13/13 — it answers
-everything it should) and specificity is 46% (6/13 — it declines less than half
-of what it should). Every failure is a question it should have refused.
+**Measured, in extractive mode: 24/30 on NVCT.** Recall is perfect on every
+company tested (90/90 across six), and every single failure is a question that
+should have been *declined*.
 
-**The generation path has not been run against the live API.** There is no
-`ANTHROPIC_API_KEY` on this machine, so it is unit-tested against fakes and stub
-clients only, and every number above is retrieval-only. Without credentials the
-app behaves exactly as it did in Week 4 and says so in the status line.
-
-Since the roadmap finished, the app has been opened up from one hard-coded
-company to **any ticker searched on demand** — see below.
+**The generation path has never run.** No key for either backend is set on this
+machine, so it is unit-tested against fakes and stub clients only, and every
+number above is retrieval-only. Without a key the app answers with filing
+excerpts and says so in the status line.
 
 ### Still open
 
@@ -246,17 +246,32 @@ decides.
 - **Failure is contained.** An API error, timeout, or refusal falls back to the
   Week 4 extractive answer — degraded, but still cited.
 
-### Turning it on
+### Two interchangeable backends
+
+Generation runs through either Claude or Gemini. They share the prompt, the
+answer schema, and - most importantly - the quote verification, so the grounding
+contract cannot drift between them. Only the API call differs.
+
+| | module | key | cost |
+| --- | --- | --- | --- |
+| Claude | [src/generate.py](src/generate.py) | `ANTHROPIC_API_KEY` | pay-as-you-go, ~2c/question |
+| Gemini | [src/generate_gemini.py](src/generate_gemini.py) | `GEMINI_API_KEY` | free tier covers the whole golden set |
+
+[src/backend.py](src/backend.py) picks whichever is configured. A Gemini key is
+free from <https://aistudio.google.com/apikey>:
 
 ```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:GEMINI_API_KEY = "..."
 & "C:\Users\yceri\AppData\Local\Programs\Python\Python310\python.exe" .\app.py
 ```
 
-The status line changes to `... - answers written from cited evidence`. Set
-`SEC_SIMPLIFIER_MODEL` to override the default `claude-opus-5`. Without a key
-everything still runs in extractive mode, and `run_demo.py --no-generate` skips
-generation even when a key is present.
+The status line changes from `answers excerpted from filings` to
+`answers written by gemini (...) from cited evidence`.
+
+Override the model with `SEC_SIMPLIFIER_GEMINI_MODEL` or `SEC_SIMPLIFIER_MODEL`;
+force a backend with `SEC_SIMPLIFIER_BACKEND=claude|gemini|none`. With no key
+everything runs in extractive mode, which is how every measurement in
+[PROGRESS.md](PROGRESS.md) was taken.
 
 > **Not yet verified against the live API.** This path has only been exercised
 > with injected fakes and a stub client — see [PROGRESS.md](PROGRESS.md) for what
@@ -297,8 +312,9 @@ around. [PROGRESS.md](PROGRESS.md) has the numbers.
 use. If you only need the lexical baseline, the app and its tests still run
 without it — the golden-set tests skip and the app reports keyword-only mode.
 
-`anthropic` is optional in the same way. Without it, or without credentials, the
-app answers with filing excerpts instead of written answers.
+The two generation SDKs are optional in the same way. Without either - or
+without a key for one - the app answers with filing excerpts instead of written
+answers, and says so in the status line.
 
 ## Load real EDGAR filings
 

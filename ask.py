@@ -72,10 +72,9 @@ def load_everything(use_generator: bool, ticker: str):
 
     generator = None
     if use_generator:
-        from src import generate
+        from src import backend
 
-        if generate.is_available():
-            generator = lambda q, e: generate.generate_grounded_answer(q, e)  # noqa: E731
+        generator = backend.get_generator()
     return corpus, generator
 
 
@@ -179,9 +178,9 @@ def main() -> None:
     tables = sum(1 for c in corpus if c.get("chunk_type") == "table")
     print(f"Company: {ticker} - {len(corpus)} chunks ({tables} tables) from local EDGAR filings")
     if generator:
-        from src.generate import DEFAULT_MODEL
+        from src import backend
 
-        print(f"Answers: written by {DEFAULT_MODEL} from cited evidence (each question is one API call)")
+        print(f"Answers: {backend.describe()} (each question is one API call)")
     elif args.no_generate:
         print("Answers: excerpted - generation disabled with --no-generate")
     else:

@@ -67,12 +67,10 @@ def verdict(supported: bool) -> str:
 
 
 def load_generator():
-    """The Claude generator when credentials exist, else None."""
-    from src import generate
+    """The configured generation backend, else None."""
+    from src import backend
 
-    if not generate.is_available():
-        return None
-    return lambda question, evidence: generate.generate_grounded_answer(question, evidence)
+    return backend.get_generator()
 
 
 def evaluate(case: dict, corpus: list[dict], generator=None) -> dict:
@@ -146,11 +144,9 @@ def main() -> None:
     print("=" * WIDTH)
     print("SEC Simplifier - keyword search vs hybrid retrieval")
     print(f"Corpus: {label}")
-    print(
-        "Answers: written by Claude from cited evidence"
-        if generator
-        else "Answers: excerpted from filings (no ANTHROPIC_API_KEY - generation off)"
-    )
+    from src import backend
+
+    print(f"Answers: {backend.describe()}")
     print("=" * WIDTH)
 
     results = [evaluate(case, corpus, generator) for case in cases]

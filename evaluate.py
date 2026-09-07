@@ -53,10 +53,9 @@ def load_corpus_and_generator(use_generator: bool, ticker: str | None = None):
 
     generator = None
     if use_generator:
-        from src import generate
+        from src import backend
 
-        if generate.is_available():
-            generator = lambda q, e: generate.generate_grounded_answer(q, e)  # noqa: E731
+        generator = backend.get_generator()
     return corpus, generator
 
 
@@ -234,9 +233,10 @@ def main() -> None:
     corpus, generator = load_corpus_and_generator(not args.no_generate, ticker)
 
     if generator:
-        from src.generate import DEFAULT_MODEL
+        from src import backend
 
-        mode = f"{ticker} - hybrid retrieval + {DEFAULT_MODEL}"
+        name, module = backend.active_backend()
+        mode = f"{ticker} - hybrid retrieval + {name} ({module.DEFAULT_MODEL})"
     else:
         mode = f"{ticker} - hybrid retrieval, extractive answers (no generation)"
 

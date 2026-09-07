@@ -59,11 +59,9 @@ def generator():
     With one they measure the full pipeline, which is what should finally close
     the two known gaps.
     """
-    from src import generate
+    from src import backend
 
-    if not generate.is_available():
-        return None
-    return lambda question, evidence: generate.generate_grounded_answer(question, evidence)
+    return backend.get_generator()
 
 
 def _answer(question: str, corpus: list[dict], generator=None) -> dict:
