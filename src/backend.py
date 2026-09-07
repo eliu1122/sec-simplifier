@@ -69,6 +69,32 @@ def get_generator() -> Callable[[str, list[dict]], dict] | None:
     return lambda question, evidence: module.generate_grounded_answer(question, evidence)
 
 
+def format_cost(usage: dict) -> str:
+    """A cost line for one call, priced by whichever backend actually ran."""
+    tokens = f"{usage.get('input_tokens', 0):,} in / {usage.get('output_tokens', 0):,} out"
+    model = usage.get("model", "?")
+
+    module = None
+    for name, module_path in BACKENDS:
+        try:
+            candidate = _load(module_path)
+        except ImportError:
+            continue
+        if model.startswith(name) or model.startswith(candidate.DEFAULT_MODEL.split("-")[0]):
+            module = candidate
+            break
+
+    if module is None:
+        return f"{tokens} tokens on {model}"
+
+    cost = (
+        usage.get("input_tokens", 0) * module.COST_PER_INPUT_TOKEN
+        + usage.get("output_tokens", 0) * module.COST_PER_OUTPUT_TOKEN
+    )
+    priced = "free tier" if cost == 0 else f"about ${cost:.4f}"
+    return f"{tokens} tokens on {model} - {priced}"
+
+
 def describe() -> str:
     """One line naming the backend and model, for status lines and reports."""
     name, module = active_backend()

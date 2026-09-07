@@ -159,6 +159,105 @@ def test_usage_is_reported_in_the_shared_shape():
     assert "model" in usage
 
 
+# --- Rate limiting ----------------------------------------------------------
+#
+# The free tier allows a few requests per minute. A rate-limited request is not
+# a failed one: treating it as failure silently corrupted an entire evaluation
+# run with extractive answers that never reached the model.
+
+
+class _RateLimited(Exception):
+    def __init__(self, retry_seconds=None):
+        message = "429 RESOURCE_EXHAUSTED. Quota exceeded"
+        if retry_seconds is not None:
+            message += f". Please retry in {retry_seconds}s"
+        super().__init__(message)
+
+
+class _FlakyModels:
+    """Fails with 429 a set number of times, then succeeds."""
+
+    def __init__(self, failures, parsed, retry_seconds=None):
+        self.remaining = failures
+        self._parsed = parsed
+        self._retry_seconds = retry_seconds
+        self.calls = 0
+
+    def generate_content(self, **kwargs):
+        self.calls += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise _RateLimited(self._retry_seconds)
+        return _StubResponse(self._parsed)
+
+
+class _FlakyClient:
+    def __init__(self, failures, parsed, retry_seconds=None):
+        self.models = _FlakyModels(failures, parsed, retry_seconds)
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    slept = []
+    monkeypatch.setattr("src.generate_gemini.time.sleep", lambda s: slept.append(s))
+    return slept
+
+
+def test_a_rate_limited_request_is_retried_not_failed(no_sleep):
+    parsed = _answer(supported=False, answer="", citations=[], reason_if_unsupported="no")
+    client = _FlakyClient(failures=2, parsed=parsed)
+
+    result = generate_grounded_answer("q", EVIDENCE, client=client)
+
+    assert client.models.calls == 3
+    assert result["supported"] is False
+    assert "usable answer" not in result["reason"]
+
+
+def test_the_delay_the_api_asks_for_is_honoured(no_sleep):
+    parsed = _answer(supported=False, answer="", citations=[], reason_if_unsupported="no")
+    client = _FlakyClient(failures=1, parsed=parsed, retry_seconds="32.3")
+
+    generate_grounded_answer("q", EVIDENCE, client=client)
+
+    assert no_sleep and 32 < no_sleep[0] < 35
+
+
+def test_persistent_rate_limiting_eventually_raises(no_sleep):
+    """Better a visible error than a run full of silent extractive fallbacks."""
+    from src.generate_gemini import MAX_RATE_LIMIT_RETRIES
+
+    parsed = _answer(supported=False, answer="", citations=[], reason_if_unsupported="no")
+    client = _FlakyClient(failures=MAX_RATE_LIMIT_RETRIES + 1, parsed=parsed)
+
+    with pytest.raises(Exception, match="429"):
+        generate_grounded_answer("q", EVIDENCE, client=client)
+
+
+def test_a_non_rate_limit_error_is_not_retried(no_sleep):
+    class _Boom:
+        def generate_content(self, **kwargs):
+            raise RuntimeError("400 INVALID_ARGUMENT")
+
+    class _Client:
+        models = _Boom()
+
+    with pytest.raises(RuntimeError, match="400"):
+        generate_grounded_answer("q", EVIDENCE, client=_Client())
+    assert no_sleep == []
+
+
+def test_an_injected_client_is_not_throttled(monkeypatch):
+    """A stub has no quota; pacing it would make the suite sleep for minutes."""
+    waits = []
+    monkeypatch.setattr("src.generate_gemini._wait_turn", lambda: waits.append(1))
+
+    client = _StubClient(_answer(supported=False, answer="", citations=[], reason_if_unsupported="no"))
+    generate_grounded_answer("q", EVIDENCE, client=client)
+
+    assert waits == []
+
+
 # --- The selector -----------------------------------------------------------
 
 

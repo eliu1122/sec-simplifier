@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import OrderedDict
@@ -573,10 +574,19 @@ def _generated_answer(
     A generator that fails is not allowed to take the app down or, worse, to
     silently produce an ungrounded answer - the caller drops back to the
     extractive response, which is still cited.
+
+    The failure is logged rather than swallowed. Falling back silently once hid
+    a broken API client through an entire evaluation run, where every answer
+    looked merely disappointing instead of never having reached the model.
     """
     try:
         result = generator(question, supporting)
-    except Exception:
+    except Exception as error:
+        logging.getLogger(__name__).warning(
+            "Generation failed, falling back to the extractive answer: %s: %s",
+            type(error).__name__,
+            error,
+        )
         return None
 
     if not result.get("supported"):

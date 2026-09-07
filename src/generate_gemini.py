@@ -16,7 +16,11 @@ Get a key at https://aistudio.google.com/apikey and set GEMINI_API_KEY.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
+import threading
+import time
 from typing import Any
 
 from .generate import (
@@ -26,10 +30,74 @@ from .generate import (
     verify_citations,
 )
 
-# Overridable because Google's model line-up moves. `list_models()` below shows
-# what the key actually has access to.
-DEFAULT_MODEL = os.environ.get("SEC_SIMPLIFIER_GEMINI_MODEL", "gemini-2.5-flash")
+# Overridable because Google's model line-up moves quickly. `list_models()`
+# below shows what the key can see - though note that listing is not the same as
+# access: gemini-2.5-flash still appears there but returns 404 for keys created
+# after it was retired to existing users.
+DEFAULT_MODEL = os.environ.get("SEC_SIMPLIFIER_GEMINI_MODEL", "gemini-3.6-flash")
 MAX_OUTPUT_TOKENS = 4000
+
+# AI Studio's free tier is what this backend exists for, so a question costs
+# nothing. Reporting Claude's rates here - as the shared cost line originally
+# did - would invent a charge that was never made.
+COST_PER_INPUT_TOKEN = 0.0
+COST_PER_OUTPUT_TOKEN = 0.0
+
+# The free tier allows a handful of requests per minute per model, so an
+# evaluation run of 30 questions will hit the limit within seconds if left
+# unthrottled. A rate-limited request is not a failed one - falling back to an
+# extractive answer would quietly corrupt a whole evaluation with results that
+# never reached the model. So: pace requests, and wait when told to.
+MIN_SECONDS_BETWEEN_REQUESTS = float(os.environ.get("SEC_SIMPLIFIER_GEMINI_INTERVAL", "13"))
+MAX_RATE_LIMIT_RETRIES = 4
+FALLBACK_RETRY_SECONDS = 30.0
+
+_throttle = threading.Lock()
+_last_request_at = 0.0
+
+_RETRY_DELAY = re.compile(r"retry in ([0-9.]+)s", re.I)
+logger = logging.getLogger(__name__)
+
+
+def _wait_turn() -> None:
+    """Space requests far enough apart to stay inside the free-tier limit."""
+    global _last_request_at
+    with _throttle:
+        gap = time.monotonic() - _last_request_at
+        if _last_request_at and gap < MIN_SECONDS_BETWEEN_REQUESTS:
+            time.sleep(MIN_SECONDS_BETWEEN_REQUESTS - gap)
+        _last_request_at = time.monotonic()
+
+
+def _retry_after(error: Exception) -> float:
+    """Seconds the API asked us to wait, or a safe default."""
+    match = _RETRY_DELAY.search(str(error))
+    return min(float(match.group(1)) + 1.0, 120.0) if match else FALLBACK_RETRY_SECONDS
+
+
+def _is_rate_limited(error: Exception) -> bool:
+    return "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error)
+
+
+def _generate_with_retry(active: Any, throttle: bool = True, **kwargs):
+    """Call the model, waiting out rate limits rather than treating them as errors.
+
+    `throttle` is off when the caller supplied its own client - a stub in tests
+    has no quota to respect, and pacing it would make the suite sleep for
+    minutes.
+    """
+    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        if throttle:
+            _wait_turn()
+        try:
+            return active.models.generate_content(**kwargs)
+        except Exception as error:
+            if not _is_rate_limited(error) or attempt == MAX_RATE_LIMIT_RETRIES:
+                raise
+            delay = _retry_after(error)
+            logger.info("Rate limited; waiting %.0fs before retrying", delay)
+            time.sleep(delay)
+    raise RuntimeError("unreachable")
 
 
 def api_key() -> str | None:
@@ -45,27 +113,44 @@ def is_available() -> bool:
     return bool(api_key())
 
 
+_DEFAULT_CLIENT: Any = None
+
+
 def _client(client: Any = None):
+    """Return the shared client, creating it once.
+
+    It must be held somewhere: the SDK's `Models` helper does not keep the
+    parent client alive, so a client left as a temporary is garbage-collected -
+    closing its HTTP connection - before the request completes. Caching it also
+    reuses the connection across questions.
+    """
     if client is not None:
         return client
-    from google import genai
 
-    key = api_key()
-    if not key:
-        raise RuntimeError(
-            "Set GEMINI_API_KEY to a key from https://aistudio.google.com/apikey"
-        )
-    return genai.Client(api_key=key)
+    global _DEFAULT_CLIENT
+    if _DEFAULT_CLIENT is None:
+        from google import genai
+
+        key = api_key()
+        if not key:
+            raise RuntimeError(
+                "Set GEMINI_API_KEY to a key from https://aistudio.google.com/apikey"
+            )
+        _DEFAULT_CLIENT = genai.Client(api_key=key)
+    return _DEFAULT_CLIENT
 
 
 def list_models(client: Any = None) -> list[str]:
     """Model names this key can generate with - to confirm the default exists."""
+    # Bind the client to a name: `.list()` returns a lazy pager, and a client
+    # left as a temporary is closed before the pages are fetched.
+    active = _client(client)
     models = []
-    for model in _client(client).models.list():
+    for model in active.models.list():
         actions = getattr(model, "supported_actions", None) or []
         if not actions or "generateContent" in actions:
-            models.append(model.name.replace("models/", ""))
-    return sorted(models)
+            models.append((model.name or "").replace("models/", ""))
+    return sorted(name for name in models if name)
 
 
 def generate_grounded_answer(
@@ -81,7 +166,10 @@ def generate_grounded_answer(
     """
     from google.genai import types
 
-    response = _client(client).models.generate_content(
+    active = _client(client)
+    response = _generate_with_retry(
+        active,
+        throttle=client is None,
         model=model,
         contents=build_prompt(question, evidence),
         config=types.GenerateContentConfig(

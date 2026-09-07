@@ -24,11 +24,6 @@ except (AttributeError, ValueError):  # pragma: no cover - non-standard streams
 VECTOR_CANDIDATES = 10
 WIDTH = 78
 
-# Published Opus 5 rates, for a rough per-question figure.
-COST_PER_INPUT_TOKEN = 5.00 / 1_000_000
-COST_PER_OUTPUT_TOKEN = 25.00 / 1_000_000
-
-
 def wrap(text: str, indent: str = "  ") -> str:
     import textwrap
 
@@ -141,16 +136,11 @@ def ask(question: str, corpus: list[dict], generator, ticker: str = "") -> None:
 
     usage = result.get("usage") or {}
     if usage:
-        cost = (
-            usage.get("input_tokens", 0) * COST_PER_INPUT_TOKEN
-            + usage.get("output_tokens", 0) * COST_PER_OUTPUT_TOKEN
-        )
+        from src import backend
+
         print()
         print("-" * WIDTH)
-        line = (
-            f"  {usage.get('input_tokens', 0):,} in / {usage.get('output_tokens', 0):,} out "
-            f"tokens on {usage.get('model', '?')} - about ${cost:.4f}"
-        )
+        line = "  " + backend.format_cost(usage)
         cached = usage.get("cache_read_tokens", 0)
         if cached:
             line += f"  ({cached:,} read from cache)"

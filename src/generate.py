@@ -29,6 +29,10 @@ from pydantic import BaseModel, Field
 DEFAULT_MODEL = os.environ.get("SEC_SIMPLIFIER_MODEL", "claude-opus-5")
 MAX_TOKENS = 4000
 
+# Published rates, so a caller can report what a question cost.
+COST_PER_INPUT_TOKEN = 5.00 / 1_000_000
+COST_PER_OUTPUT_TOKEN = 25.00 / 1_000_000
+
 # Only these fields of a chunk are shown to the model. Everything else it might
 # need for a citation (form, date, URL) is looked up locally from the chunk_id,
 # so the model never has to reproduce a URL correctly.
