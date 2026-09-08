@@ -225,10 +225,10 @@ def test_the_delay_the_api_asks_for_is_honoured(no_sleep):
 
 def test_persistent_rate_limiting_eventually_raises(no_sleep):
     """Better a visible error than a run full of silent extractive fallbacks."""
-    from src.generate_gemini import MAX_RATE_LIMIT_RETRIES
+    from src.generate_gemini import MAX_RETRIES
 
     parsed = _answer(supported=False, answer="", citations=[], reason_if_unsupported="no")
-    client = _FlakyClient(failures=MAX_RATE_LIMIT_RETRIES + 1, parsed=parsed)
+    client = _FlakyClient(failures=MAX_RETRIES + 1, parsed=parsed)
 
     with pytest.raises(Exception, match="429"):
         generate_grounded_answer("q", EVIDENCE, client=client)
@@ -325,3 +325,73 @@ def test_both_backends_return_the_same_keys(monkeypatch):
     assert set(claude) == set(gemini)
     assert claude["supported"] == gemini["supported"] is True
     assert claude["citations"][0]["quote"] == gemini["citations"][0]["quote"]
+
+
+# --- Transient failures are waited out, not counted as answers --------------
+
+
+class _Overloaded(Exception):
+    def __init__(self):
+        super().__init__("503 UNAVAILABLE. This model is currently experiencing high demand.")
+
+
+def test_a_503_is_retried_like_a_rate_limit(no_sleep):
+    """17 of 30 cases in one run were 503s, each silently becoming an excerpt."""
+    from src.generate_gemini import _is_retryable
+
+    assert _is_retryable(_Overloaded())
+
+    parsed = _answer(supported=False, answer="", citations=[], reason_if_unsupported="no")
+    result = generate_grounded_answer("q", EVIDENCE, client=_FlakyClient(failures=2, parsed=parsed))
+
+    assert result["supported"] is False
+
+
+def test_retry_delays_grow_with_each_attempt(no_sleep):
+    parsed = _answer(supported=False, answer="", citations=[], reason_if_unsupported="no")
+    generate_grounded_answer("q", EVIDENCE, client=_FlakyClient(failures=3, parsed=parsed))
+
+    assert no_sleep == sorted(no_sleep), f"delays should not shrink: {no_sleep}"
+    assert len(no_sleep) == 3
+
+
+def test_a_request_error_is_still_not_retried(no_sleep):
+    class _Bad:
+        def generate_content(self, **kwargs):
+            raise RuntimeError("400 INVALID_ARGUMENT: bad schema")
+
+    class _Client:
+        models = _Bad()
+
+    with pytest.raises(RuntimeError, match="400"):
+        generate_grounded_answer("q", EVIDENCE, client=_Client())
+    assert no_sleep == []
+
+
+def test_the_client_bounds_a_single_request_and_owns_retry_policy(monkeypatch):
+    """One retry layer, and no request that can hang.
+
+    The SDK retries 408/429/5xx five times by itself with up to 60s delays.
+    Under this module's own retry that is 25 requests per question, and with no
+    timeout a stuck connection blocks forever - which turned one 30-case
+    evaluation into a 7-hour run producing nothing.
+    """
+    import google.genai
+
+    import src.generate_gemini as gg
+
+    captured = {}
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(google.genai, "Client", fake_client)
+    monkeypatch.setattr(gg, "_DEFAULT_CLIENT", None)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+
+    gg._client()
+
+    options = captured["http_options"]
+    assert options.timeout == gg.REQUEST_TIMEOUT_MS
+    assert options.retry_options.attempts == 1, "the SDK must not retry underneath us"

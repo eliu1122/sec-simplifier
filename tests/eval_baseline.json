@@ -1,5 +1,5 @@
 {
-  "recorded": "2026-09-06",
+  "recorded": "2026-09-07",
   "mode": "NVCT - hybrid retrieval, extractive answers (no generation)",
   "stats": {
     "cases": 30,
@@ -12,8 +12,10 @@
     "answers": 23,
     "section_hits": 4,
     "section_checked": 5,
+    "fact_hits": 4,
+    "fact_checked": 10,
     "rejected_quotes": 0,
-    "open_gaps": 6,
-    "gaps_recorded": 6
+    "open_gaps": 3,
+    "gaps_recorded": 3
   }
 }

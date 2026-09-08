@@ -49,8 +49,19 @@ COST_PER_OUTPUT_TOKEN = 0.0
 # extractive answer would quietly corrupt a whole evaluation with results that
 # never reached the model. So: pace requests, and wait when told to.
 MIN_SECONDS_BETWEEN_REQUESTS = float(os.environ.get("SEC_SIMPLIFIER_GEMINI_INTERVAL", "13"))
-MAX_RATE_LIMIT_RETRIES = 4
+MAX_RETRIES = 4
 FALLBACK_RETRY_SECONDS = 30.0
+
+# A single call must not be able to hang. Without this the SDK waits
+# indefinitely, and one stuck connection turned a 30-case run into a 7-hour one.
+REQUEST_TIMEOUT_MS = 60_000
+
+# The SDK retries 408/429/5xx five times on its own, with up to 60s between
+# attempts. Layered under the retry below that is 25 requests per question with
+# compounding backoff. Exactly one layer should own the policy, and it is the
+# one here, because it reads the delay the API asks for out of the error body
+# rather than guessing at exponential backoff.
+SDK_ATTEMPTS = 1
 
 _throttle = threading.Lock()
 _last_request_at = 0.0
@@ -72,11 +83,25 @@ def _wait_turn() -> None:
 def _retry_after(error: Exception) -> float:
     """Seconds the API asked us to wait, or a safe default."""
     match = _RETRY_DELAY.search(str(error))
-    return min(float(match.group(1)) + 1.0, 120.0) if match else FALLBACK_RETRY_SECONDS
+    if match:
+        return min(float(match.group(1)) + 1.0, 120.0)
+    # 503s carry no retry hint and usually clear quickly; a rate limit needs
+    # longer. Back off further on each attempt either way.
+    return 8.0 if "503" in str(error) or "UNAVAILABLE" in str(error) else FALLBACK_RETRY_SECONDS
 
 
-def _is_rate_limited(error: Exception) -> bool:
-    return "429" in str(error) or "RESOURCE_EXHAUSTED" in str(error)
+def _is_retryable(error: Exception) -> bool:
+    """Transient conditions worth waiting out rather than failing on.
+
+    503 UNAVAILABLE means the model is busy, not that anything is wrong with
+    the request - it accounted for 17 of 30 cases in one evaluation run, every
+    one of which silently became an extractive answer.
+    """
+    text = str(error)
+    return any(
+        marker in text
+        for marker in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "overloaded")
+    )
 
 
 def _generate_with_retry(active: Any, throttle: bool = True, **kwargs):
@@ -86,16 +111,16 @@ def _generate_with_retry(active: Any, throttle: bool = True, **kwargs):
     has no quota to respect, and pacing it would make the suite sleep for
     minutes.
     """
-    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+    for attempt in range(MAX_RETRIES + 1):
         if throttle:
             _wait_turn()
         try:
             return active.models.generate_content(**kwargs)
         except Exception as error:
-            if not _is_rate_limited(error) or attempt == MAX_RATE_LIMIT_RETRIES:
+            if not _is_retryable(error) or attempt == MAX_RETRIES:
                 raise
-            delay = _retry_after(error)
-            logger.info("Rate limited; waiting %.0fs before retrying", delay)
+            delay = _retry_after(error) * (attempt + 1)
+            logger.info("Transient failure; waiting %.0fs before retry %d", delay, attempt + 1)
             time.sleep(delay)
     raise RuntimeError("unreachable")
 
@@ -136,7 +161,15 @@ def _client(client: Any = None):
             raise RuntimeError(
                 "Set GEMINI_API_KEY to a key from https://aistudio.google.com/apikey"
             )
-        _DEFAULT_CLIENT = genai.Client(api_key=key)
+        from google.genai import types
+
+        _DEFAULT_CLIENT = genai.Client(
+            api_key=key,
+            http_options=types.HttpOptions(
+                timeout=REQUEST_TIMEOUT_MS,
+                retry_options=types.HttpRetryOptions(attempts=SDK_ATTEMPTS),
+            ),
+        )
     return _DEFAULT_CLIENT
 
 

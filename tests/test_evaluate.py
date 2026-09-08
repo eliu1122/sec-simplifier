@@ -78,6 +78,7 @@ def _row(expected, answered, **kwargs):
         "section_known_gap": False,
         "rejected_quotes": 0,
         "generated": False,
+        "generation_error": "",
         "usage": {},
     }
     base.update(kwargs)
@@ -273,3 +274,16 @@ def test_recorded_facts_only_appear_on_cases_expected_to_answer():
     for case in _cases():
         if case.get("expect_answer_contains"):
             assert case["expect"] == "supported", case["question"]
+
+
+def test_summarize_counts_how_many_cases_reached_the_model():
+    """A partial run is a mix of two modes, not a measurement of either."""
+    import evaluate
+
+    rows = [_row(True, True, generated=True), _row(True, True, generated=True),
+            _row(True, True, generated=False)]
+
+    stats = evaluate.summarize(rows)
+
+    assert stats["reached_model"] == 2
+    assert stats["cases"] == 3

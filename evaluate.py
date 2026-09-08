@@ -113,6 +113,7 @@ def score_case(
         ),
         "section_known_gap": bool(case.get("section_known_gap")),
         "fact_hit": answer_states_the_fact(case, result, home),
+        "generation_error": result.get("generation_error", ""),
         # Only the generator produces verifiable quotes; the extractive path
         # returns a slice of the chunk, which is grounded by construction.
         "rejected_quotes": len(result.get("rejected_citations") or []),
@@ -146,6 +147,7 @@ def summarize(rows: list[dict]) -> dict:
         "section_checked": len(with_wanted_section),
         "fact_hits": sum(1 for r in rows if r.get("fact_hit")),
         "fact_checked": sum(1 for r in rows if r.get("fact_hit") is not None),
+        "reached_model": sum(1 for r in rows if r["generated"]),
         "rejected_quotes": sum(r["rejected_quotes"] for r in rows),
         "open_gaps": sum(1 for r in rows if r["known_gap"] and not r["correct"]),
         "gaps_recorded": sum(1 for r in rows if r["known_gap"]),
@@ -183,6 +185,22 @@ def report(rows: list[dict], stats: dict, baseline: dict | None, mode: str) -> N
         for row in rows:
             if row.get("fact_hit") is False:
                 print(f"    answered without the fact: {row['question'][:44]}")
+
+    # A run where some calls never reached the model is not a measurement of
+    # it. Free tiers cap requests per day and the service returns 503 under
+    # load; the fallback is deliberately quiet in the UI, so the harness has
+    # to say so itself rather than publishing a blend of two modes as one.
+    attempted = stats["reached_model"] or any(r.get("generation_error") for r in rows)
+    if attempted and stats["reached_model"] < stats["cases"]:
+        missed = stats["cases"] - stats["reached_model"]
+        print("")
+        print(f"  PARTIAL RUN: generation reached {stats['reached_model']}/{stats['cases']} cases;")
+        print(f"  {missed} fell back to extractive answers. These figures mix both modes")
+        print("  and measure neither. Re-run before trusting them.")
+        reasons = sorted({r['generation_error'] for r in rows
+                          if not r['generated'] and r.get('generation_error')})
+        for reason in reasons:
+            print(f"    cause: {reason}")
 
     print("\nGROUNDING")
     if any(r["generated"] for r in rows):
