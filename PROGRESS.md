@@ -23,6 +23,7 @@ this disclosed"* when the filings don't support an answer.
   [the correctness metric](#the-correctness-metric-and-what-it-changed-).
 
 - Detailed setup and run instructions: [README.md](README.md)
+- Session-by-session account of the work, including the mistakes: [worklog/](worklog/)
 - Active code lives in this folder (`sec-simplifier/`). `../edgar_copilot/` is a
   stale earlier copy and is not maintained.
 
@@ -832,8 +833,75 @@ this and simply was not being called.
 
 ---
 
+## Reporting honestly about itself 🟢
+
+Added **2026-09-07**. Three fixes, all of the same kind: the system was
+describing what it was configured to do rather than what it actually did.
+
+### The status line claimed generation after quota ran out
+
+It said "answers written by gemini" whenever a key was present, and kept saying
+it while serving extractive excerpts. `answer_question` now returns `generated`
+and `generation_error` on every response, and the page reports the mode of the
+**last actual answer**, in amber when degraded:
+
+| situation | shown |
+| --- | --- |
+| on load | `generation enabled (gemini gemini-3.6-flash)` |
+| after a generated answer | `last answer written by gemini gemini-3.6-flash` |
+| quota exhausted | `last answer excerpted - daily free-tier quota reached` |
+| bad key | `last answer excerpted - the API key was rejected` |
+| model overloaded | `last answer excerpted - the model is temporarily unavailable` |
+
+The load-time wording is deliberately intent rather than fact - a configured
+backend can still be out of quota.
+
+### `PARTIAL RUN`: the harness refuses to publish a blend as a measurement
+
+```
+PARTIAL RUN: generation reached 13/30 cases;
+17 fell back to extractive answers. These figures mix both modes
+and measure neither. Re-run before trusting them.
+  cause: the model is temporarily unavailable
+```
+
+Guarded so it stays quiet in extractive mode, where zero calls is correct rather
+than a problem.
+
+### Requests are bounded
+
+A 30-case run took **7.3 hours** and produced nothing. The `google-genai` SDK
+already retries 408/429/5xx five times with up to 60-second delays; under a
+second retry layer that is up to 25 requests per question with compounding
+backoff, and with no timeout one stuck connection blocked indefinitely.
+
+- `REQUEST_TIMEOUT_MS` bounds a single call at 60s.
+- `HttpRetryOptions(attempts=1)` disables the SDK's retry, leaving exactly one
+  layer owning the policy - the local one, because it reads the delay the API
+  asks for out of the error body rather than guessing at exponential backoff.
+- 503 `UNAVAILABLE` is now retried alongside 429. It is transient, and accounted
+  for 17 of 30 cases in one run, every one of which silently became an
+  extractive answer.
+
+Both pinned by tests that explain why, so a second retry layer is not re-added.
+
+### The pattern worth naming
+
+Four times in this project a silent fallback turned a failure into a
+plausible-looking result: a broken API client, an exhausted quota, a 503 storm,
+and a retry layer stacked on a retry layer. Each cost a full evaluation run, and
+two nearly entered this document as findings.
+
+The thesis here is that a system should say when it does not know. The
+**measurement harness** needed that discipline at least as much as the app did.
+
+---
+
 ## Known weaknesses / open risks
 
+- **No clean full-set generation run exists.** Three attempts, three different
+  failures: the daily quota, a 503 storm, and a self-inflicted 7-hour hang. The
+  ten-case correctness comparison is clean; the 30-case one is not.
 - **Correctness is measured on 10 of 30 cases only.** The other twenty have no
   recorded fact - "what could go wrong with the business?" has no single string
   that proves a good answer. Those still score on answered/declined alone, so

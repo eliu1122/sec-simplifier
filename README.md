@@ -50,6 +50,8 @@ The repo now has a minimal working MVP around the grounded Q&A loop:
 
 See [PROGRESS.md](PROGRESS.md) for a pipeline diagram and a full week-by-week
 account of what is built, what is pending, and the known weaknesses.
+[worklog/](worklog/) is the session-by-session record of how it got there -
+including the four occasions a silent fallback cost an evaluation run.
 
 | Week | Focus | Deliverable | Status |
 | --- | --- | --- | --- |
