@@ -395,3 +395,80 @@ def test_the_client_bounds_a_single_request_and_owns_retry_policy(monkeypatch):
     options = captured["http_options"]
     assert options.timeout == gg.REQUEST_TIMEOUT_MS
     assert options.retry_options.attempts == 1, "the SDK must not retry underneath us"
+
+
+@pytest.mark.parametrize("message", [
+    "503 UNAVAILABLE. This model is currently experiencing high demand.",
+    "504 DEADLINE_EXCEEDED. The request timed out.",
+    "429 RESOURCE_EXHAUSTED. Quota exceeded",
+])
+def test_transient_server_conditions_are_retryable(message):
+    """A slow or busy model is not a bad request."""
+    from src.generate_gemini import _is_retryable
+
+    assert _is_retryable(RuntimeError(message))
+
+
+@pytest.mark.parametrize("message", [
+    "400 INVALID_ARGUMENT: bad schema",
+    "401 Unauthorized",
+    "404 NOT_FOUND: no such model",
+])
+def test_request_errors_are_not_retryable(message):
+    """Retrying these just wastes quota - they will fail identically."""
+    from src.generate_gemini import _is_retryable
+
+    assert not _is_retryable(RuntimeError(message))
+
+
+def test_a_daily_quota_error_is_not_retried(no_sleep):
+    """A per-day cap cannot recover mid-run; retrying only burns minutes."""
+    from src.generate_gemini import _is_retryable
+
+    daily = RuntimeError(
+        "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: "
+        "GenerateRequestsPerDayPerProjectPerModel-FreeTier"
+    )
+    assert not _is_retryable(daily)
+
+    class _Capped:
+        def generate_content(self, **kwargs):
+            raise daily
+
+    class _Client:
+        models = _Capped()
+
+    with pytest.raises(RuntimeError, match="429"):
+        generate_grounded_answer("q", EVIDENCE, client=_Client())
+    assert no_sleep == [], "a daily cap should fail fast, not back off"
+
+
+def test_a_per_minute_rate_limit_is_still_retried(no_sleep):
+    """Only the per-day cap is unrecoverable; per-minute limits pass."""
+    from src.generate_gemini import _is_retryable
+
+    assert _is_retryable(RuntimeError(
+        "429 RESOURCE_EXHAUSTED. Quota exceeded for metric: "
+        "GenerateRequestsPerMinutePerProjectPerModel-FreeTier. Please retry in 32s"
+    ))
+
+
+def test_retrying_stops_at_the_budget_rather_than_the_attempt_count(monkeypatch):
+    """A degraded service cost ~7 minutes per question before this."""
+    import src.generate_gemini as gg
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(gg.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(gg.time, "sleep", lambda s: clock.__setitem__("now", clock["now"] + s))
+    monkeypatch.setattr(gg, "_wait_turn", lambda: None)
+
+    parsed = _answer(supported=False, answer="", citations=[], reason_if_unsupported="no")
+    # More failures than the budget allows time for.
+    client = _FlakyClient(failures=99, parsed=parsed)
+
+    with pytest.raises(Exception):
+        generate_grounded_answer("q", EVIDENCE, client=client)
+
+    assert clock["now"] <= gg.RETRY_BUDGET_SECONDS, (
+        f"spent {clock['now']}s, budget is {gg.RETRY_BUDGET_SECONDS}s"
+    )

@@ -54,7 +54,13 @@ FALLBACK_RETRY_SECONDS = 30.0
 
 # A single call must not be able to hang. Without this the SDK waits
 # indefinitely, and one stuck connection turned a 30-case run into a 7-hour one.
-REQUEST_TIMEOUT_MS = 60_000
+REQUEST_TIMEOUT_MS = 25_000
+
+# Ceiling on the wall-clock time one question may spend retrying. Without it a
+# degraded service costs ~7 minutes per question - five attempts each waiting
+# out the full request timeout, plus backoff - and a 30-case run grinds for an
+# hour producing nothing.
+RETRY_BUDGET_SECONDS = 90.0
 
 # The SDK retries 408/429/5xx five times on its own, with up to 60s between
 # attempts. Layered under the retry below that is 25 requests per question with
@@ -90,6 +96,16 @@ def _retry_after(error: Exception) -> float:
     return 8.0 if "503" in str(error) or "UNAVAILABLE" in str(error) else FALLBACK_RETRY_SECONDS
 
 
+def _is_exhausted_for_today(error: Exception) -> bool:
+    """A per-day quota cannot come back during a run.
+
+    Retrying it burns minutes of backoff to fail identically. The run should
+    fall back immediately and let the harness report how far it got.
+    """
+    text = str(error)
+    return "PerDay" in text or "per day" in text.lower()
+
+
 def _is_retryable(error: Exception) -> bool:
     """Transient conditions worth waiting out rather than failing on.
 
@@ -97,10 +113,18 @@ def _is_retryable(error: Exception) -> bool:
     the request - it accounted for 17 of 30 cases in one evaluation run, every
     one of which silently became an extractive answer.
     """
+    if _is_exhausted_for_today(error):
+        return False
     text = str(error)
     return any(
         marker in text
-        for marker in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "overloaded")
+        # 504 / DEADLINE_EXCEEDED is the gateway giving up on a slow model, and
+        # is what a request that would otherwise hang now surfaces as.
+        for marker in (
+            "429", "RESOURCE_EXHAUSTED",
+            "503", "UNAVAILABLE", "overloaded",
+            "504", "DEADLINE_EXCEEDED",
+        )
     )
 
 
@@ -111,6 +135,7 @@ def _generate_with_retry(active: Any, throttle: bool = True, **kwargs):
     has no quota to respect, and pacing it would make the suite sleep for
     minutes.
     """
+    deadline = time.monotonic() + RETRY_BUDGET_SECONDS
     for attempt in range(MAX_RETRIES + 1):
         if throttle:
             _wait_turn()
@@ -120,6 +145,9 @@ def _generate_with_retry(active: Any, throttle: bool = True, **kwargs):
             if not _is_retryable(error) or attempt == MAX_RETRIES:
                 raise
             delay = _retry_after(error) * (attempt + 1)
+            if time.monotonic() + delay > deadline:
+                logger.warning("Retry budget spent on this question; giving up")
+                raise
             logger.info("Transient failure; waiting %.0fs before retry %d", delay, attempt + 1)
             time.sleep(delay)
     raise RuntimeError("unreachable")
