@@ -472,3 +472,55 @@ def test_retrying_stops_at_the_budget_rather_than_the_attempt_count(monkeypatch)
     assert clock["now"] <= gg.RETRY_BUDGET_SECONDS, (
         f"spent {clock['now']}s, budget is {gg.RETRY_BUDGET_SECONDS}s"
     )
+
+
+# --- Rate limiting spends the allowance instead of rationing it -------------
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    import src.generate_gemini as gg
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(gg.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(gg.time, "sleep", lambda s: clock.__setitem__("now", clock["now"] + s))
+    gg._recent_requests.clear()
+    yield clock
+    gg._recent_requests.clear()
+
+
+def test_requests_inside_the_allowance_do_not_wait(fake_clock):
+    """A fixed delay charged an interactive user 13s per question for nothing."""
+    import src.generate_gemini as gg
+
+    start = fake_clock["now"]
+    for _ in range(gg.REQUESTS_PER_MINUTE):
+        gg._wait_turn()
+
+    assert fake_clock["now"] == start, "the first minute's allowance should be free"
+
+
+def test_the_request_that_would_breach_the_limit_waits(fake_clock):
+    import src.generate_gemini as gg
+
+    for _ in range(gg.REQUESTS_PER_MINUTE):
+        gg._wait_turn()
+    before = fake_clock["now"]
+    gg._wait_turn()
+
+    waited = fake_clock["now"] - before
+    assert 59 < waited <= 61, f"should wait out the window, waited {waited}"
+
+
+def test_the_allowance_refills_as_the_window_slides(fake_clock):
+    import src.generate_gemini as gg
+
+    for _ in range(gg.REQUESTS_PER_MINUTE):
+        gg._wait_turn()
+
+    # A minute later the earlier requests have aged out.
+    fake_clock["now"] += 61
+    before = fake_clock["now"]
+    gg._wait_turn()
+
+    assert fake_clock["now"] == before, "expired requests should not count against us"

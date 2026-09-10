@@ -21,6 +21,7 @@ import os
 import re
 import threading
 import time
+from collections import deque
 from typing import Any
 
 from .generate import (
@@ -48,7 +49,15 @@ COST_PER_OUTPUT_TOKEN = 0.0
 # unthrottled. A rate-limited request is not a failed one - falling back to an
 # extractive answer would quietly corrupt a whole evaluation with results that
 # never reached the model. So: pace requests, and wait when told to.
-MIN_SECONDS_BETWEEN_REQUESTS = float(os.environ.get("SEC_SIMPLIFIER_GEMINI_INTERVAL", "13"))
+# The free tier allows a few requests per minute. A fixed delay before every
+# call would honour that, but it also charges an interactive user 13 seconds for
+# a question nobody else is competing with - and retrieval itself takes 10ms, so
+# the wait was almost all of the perceived latency. A sliding window spends the
+# allowance as it comes: the first requests in a minute go straight through, and
+# only the one that would actually breach the limit waits, and only as long as
+# it must.
+REQUESTS_PER_MINUTE = int(os.environ.get("SEC_SIMPLIFIER_GEMINI_RPM", "5"))
+RATE_WINDOW_SECONDS = 60.0
 MAX_RETRIES = 4
 FALLBACK_RETRY_SECONDS = 30.0
 
@@ -60,7 +69,11 @@ REQUEST_TIMEOUT_MS = 25_000
 # degraded service costs ~7 minutes per question - five attempts each waiting
 # out the full request timeout, plus backoff - and a 30-case run grinds for an
 # hour producing nothing.
-RETRY_BUDGET_SECONDS = 90.0
+# Batch scoring can afford to wait out a rate limit to get a complete run. A
+# person watching a spinner cannot - one question took 59 seconds to fail that
+# way. app.py lowers this so the UI gives up quickly and says why; evaluate.py
+# keeps the longer budget.
+RETRY_BUDGET_SECONDS = float(os.environ.get("SEC_SIMPLIFIER_RETRY_BUDGET", "90"))
 
 # The SDK retries 408/429/5xx five times on its own, with up to 60s between
 # attempts. Layered under the retry below that is 25 requests per question with
@@ -70,20 +83,28 @@ RETRY_BUDGET_SECONDS = 90.0
 SDK_ATTEMPTS = 1
 
 _throttle = threading.Lock()
-_last_request_at = 0.0
+_recent_requests: "deque[float]" = deque()
 
 _RETRY_DELAY = re.compile(r"retry in ([0-9.]+)s", re.I)
 logger = logging.getLogger(__name__)
 
 
+def _drop_expired(now: float) -> None:
+    while _recent_requests and now - _recent_requests[0] >= RATE_WINDOW_SECONDS:
+        _recent_requests.popleft()
+
+
 def _wait_turn() -> None:
-    """Space requests far enough apart to stay inside the free-tier limit."""
-    global _last_request_at
+    """Block only if this request would exceed the per-minute allowance."""
     with _throttle:
-        gap = time.monotonic() - _last_request_at
-        if _last_request_at and gap < MIN_SECONDS_BETWEEN_REQUESTS:
-            time.sleep(MIN_SECONDS_BETWEEN_REQUESTS - gap)
-        _last_request_at = time.monotonic()
+        now = time.monotonic()
+        _drop_expired(now)
+        if len(_recent_requests) >= REQUESTS_PER_MINUTE:
+            # Wait exactly until the oldest request leaves the window.
+            time.sleep(RATE_WINDOW_SECONDS - (now - _recent_requests[0]) + 0.1)
+            now = time.monotonic()
+            _drop_expired(now)
+        _recent_requests.append(now)
 
 
 def _retry_after(error: Exception) -> float:

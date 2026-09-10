@@ -55,7 +55,9 @@ Set supported = false when:
 When supported = false, leave answer empty and explain in reason_if_unsupported what the filings would need to say. Do not hedge into a partial answer.
 
 Set supported = true only when the evidence states the answer. Then:
-- Write two to four sentences in plain language, for a reader who does not know filing vocabulary. Explain terms of art rather than repeating them.
+- Lead with the answer. The first sentence must answer the question directly and contain the specific fact asked for - the figure, the date, the name. Do not open by restating the question, naming the section, or describing what the filing discusses.
+- Stop there unless something changes how the answer should be read: the period it is as of, a caveat the filing itself attaches, or a more recent figure that disagrees. Two sentences is usually right and four is the maximum.
+- Plain language, for a reader who does not know filing vocabulary. Explain terms of art rather than repeating them.
 - Attribute claims to the company ("the company reports...", "the filing states..."), because that is what the evidence establishes - not whether the claim is true.
 - Give one citation per claim that carries weight. Each citation needs the id of the evidence block it came from and a quote copied exactly from that block, character for character. Do not tidy, trim mid-word, or join text from separate places. A quote that does not appear verbatim in the block will be discarded and may cost you the answer.
 - Keep quotes short: the sentence or table row that carries the fact.
