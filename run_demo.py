@@ -142,7 +142,7 @@ def main() -> None:
     generator = None if args.no_generate else load_generator()
 
     print("=" * WIDTH)
-    print("SEC Simplifier - keyword search vs hybrid retrieval")
+    print("Footnote - keyword search vs hybrid retrieval")
     print(f"Corpus: {label}")
     from src import backend
 

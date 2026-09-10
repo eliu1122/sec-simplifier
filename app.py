@@ -1,4 +1,4 @@
-"""Run a local SEC Simplifier UI at http://127.0.0.1:8000."""
+"""Run a local Footnote UI at http://127.0.0.1:8000."""
 
 from __future__ import annotations
 
@@ -11,6 +11,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+# A person is waiting on every answer here, so generation gives up quickly and
+# reports why rather than waiting out a rate limit. Set before importing src so
+# the module picks it up. evaluate.py keeps the longer default.
+os.environ.setdefault("SEC_SIMPLIFIER_RETRY_BUDGET", "20")
+
 from src.grounded_qa import answer_question
 
 HOST, PORT = "127.0.0.1", 8000
@@ -18,7 +23,11 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 
 # Candidates pulled from the vector store before fusion. Wider than the number
 # of citations shown, so rank fusion has something to work with.
-VECTOR_CANDIDATES = 10
+# Candidates pulled before fusion. Wide enough that a chunk missing from
+# this list really is far away: the lexical veto treats an absent chunk as
+# distance 1.0, so a short window vetoed good lexical matches for being
+# outside the window rather than for being unrelated.
+VECTOR_CANDIDATES = 60
 
 # Companies whose tokenized corpus is kept in memory. Matches the lexical
 # index cache in grounded_qa, so the two do not evict each other's work.
@@ -129,8 +138,8 @@ def start_company_load(raw_ticker: str) -> dict:
     return load_state()
 
 
-PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SEC Simplifier</title><style>
-:root{font-family:system-ui,sans-serif;color:#172033;background:#f4f7fb}body{margin:0}main{max-width:780px;margin:auto;padding:56px 24px}.eyebrow{color:#4766c5;font-size:.8rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase}h1{font-size:clamp(2rem,5vw,3.2rem);margin:8px 0}.intro,.hint,.metadata,footer{color:#647287;line-height:1.5}.card{background:#fff;border:1px solid #dce3ef;border-radius:16px;box-shadow:0 10px 30px #1927440d;padding:20px;margin-top:22px}label{display:block;font-weight:700;margin-bottom:8px}textarea{box-sizing:border-box;border:1px solid #b9c5d8;border-radius:10px;font:inherit;min-height:100px;padding:12px;width:100%}.starters{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.actions{display:flex;justify-content:space-between;align-items:center;gap:12px}button{background:#3157c6;border:0;border-radius:9px;color:#fff;cursor:pointer;font:inherit;font-weight:700;padding:10px 15px}.starter{background:#eff3ff;color:#294ba9;font-size:.86rem}.hidden{display:none}.status{border-radius:99px;display:inline-block;font-size:.78rem;font-weight:800;padding:5px 10px}.supported{background:#e4f7eb;color:#146b38}.unsupported{background:#fff0e8;color:#9b3b12}.excerpt{background:#eef1f7;color:#4a5568}.stale{color:#9a6b00;font-weight:700}.evidence-card .status{margin-bottom:8px}.company-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}select,input#ticker{border:1px solid #b9c5d8;border-radius:9px;font:inherit;padding:9px 10px}select{min-width:190px}input#ticker{width:210px;text-transform:uppercase}.warn{background:#fff7ed;border-left:3px solid #d97706;border-radius:5px;color:#92400e;margin-top:10px;padding:9px 11px}.progress{margin-top:12px}.bar{background:#e6ebf4;border-radius:99px;height:8px;overflow:hidden}.fill{background:#3157c6;height:100%;width:0;transition:width .35s}.insight{background:#f3f6ff;border-left:4px solid #6382df;border-radius:6px;line-height:1.5;margin-top:16px;padding:12px}.evidence{border-top:1px solid #e4e9f2;margin-top:18px}.evidence-card{background:#fafbfd;border:1px solid #e2e7f0;border-radius:10px;margin-top:10px;padding:14px}.evidence-card p{line-height:1.55;margin:8px 0}a{color:#3157c6}footer{font-size:.85rem;margin-top:22px;text-align:center}</style></head><body><main><div class="eyebrow">Local research workspace</div><h1>SEC Simplifier</h1><p class="intro">Plain-English due diligence with evidence from company filings.</p><section class="card"><label for="ticker">Company</label><div class="company-row"><select id="company-picker"></select><input id="ticker" placeholder="or add a ticker, e.g. AAPL" maxlength="10" autocomplete="off"><button id="load" type="button">Add</button></div><div class="hint" id="company-hint"></div><div class="progress hidden" id="progress"><div class="bar"><div class="fill" id="progress-fill"></div></div><div class="hint" id="progress-text"></div></div></section><section class="card"><form id="question-form"><label for="question">Your question</label><textarea id="question" placeholder="Ask about the selected company's filings, e.g. how much cash does it have?" required></textarea><div class="starters"><button class="starter" type="button" data-question="How much cash does the company have on hand?">How much cash does it have?</button><button class="starter" type="button" data-question="What could go wrong with the business?">What are the risks?</button><button class="starter" type="button" data-question="What is the CEO annual salary?">What is the CEO paid?</button><button class="starter" type="button" data-question="Were there any related party transactions?">Any related-party deals?</button><button class="starter" type="button" data-question="What is the price of Bitcoin?">Ask something not disclosed</button></div><div class="actions"><span class="hint" id="corpus-label"></span><button id="submit" type="submit">Ask question</button></div></form></section><section class="card hidden" id="result"><span id="status" class="status"></span><h2>Answer</h2><p id="answer"></p><div class="insight"><strong>Why it matters</strong><div id="why"></div></div><div class="evidence" id="evidence-wrap"><h2 id="evidence-heading">Evidence from the filing</h2><div id="evidence"></div></div></section><footer>Verify answers against the cited filing before making an investment decision.</footer></main><script>
+PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Footnote</title><style>
+:root{font-family:system-ui,sans-serif;color:#172033;background:#f4f7fb}body{margin:0}main{max-width:780px;margin:auto;padding:56px 24px}.eyebrow{color:#4766c5;font-size:.8rem;font-weight:800;letter-spacing:.09em;text-transform:uppercase}h1{font-size:clamp(2rem,5vw,3.2rem);margin:8px 0}.intro,.hint,.metadata,footer{color:#647287;line-height:1.5}.card{background:#fff;border:1px solid #dce3ef;border-radius:16px;box-shadow:0 10px 30px #1927440d;padding:20px;margin-top:22px}label{display:block;font-weight:700;margin-bottom:8px}textarea{box-sizing:border-box;border:1px solid #b9c5d8;border-radius:10px;font:inherit;min-height:100px;padding:12px;width:100%}.starters{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}.actions{display:flex;justify-content:space-between;align-items:center;gap:12px}button{background:#3157c6;border:0;border-radius:9px;color:#fff;cursor:pointer;font:inherit;font-weight:700;padding:10px 15px}.starter{background:#eff3ff;color:#294ba9;font-size:.86rem}.hidden{display:none}.status{border-radius:99px;display:inline-block;font-size:.78rem;font-weight:800;padding:5px 10px}.supported{background:#e4f7eb;color:#146b38}.unsupported{background:#fff0e8;color:#9b3b12}.excerpt{background:#eef1f7;color:#4a5568}.stale{color:#9a6b00;font-weight:700}.evidence-card .status{margin-bottom:8px}.company-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}select,input#ticker{border:1px solid #b9c5d8;border-radius:9px;font:inherit;padding:9px 10px}select{min-width:190px}input#ticker{width:210px;text-transform:uppercase}.warn{background:#fff7ed;border-left:3px solid #d97706;border-radius:5px;color:#92400e;margin-top:10px;padding:9px 11px}.error{background:#fef2f2;border-left:3px solid #dc2626;border-radius:6px;color:#991b1b;line-height:1.5;margin-top:16px;padding:10px 12px}button:disabled,select:disabled,input:disabled,textarea:disabled{cursor:not-allowed;opacity:.55}.progress{margin-top:12px}.bar{background:#e6ebf4;border-radius:99px;height:8px;overflow:hidden}.fill{background:#3157c6;height:100%;width:0;transition:width .35s}.insight{background:#f3f6ff;border-left:4px solid #6382df;border-radius:6px;line-height:1.5;margin-top:16px;padding:12px}.evidence{border-top:1px solid #e4e9f2;margin-top:18px}.evidence-card{background:#fafbfd;border:1px solid #e2e7f0;border-radius:10px;margin-top:10px;padding:14px}.evidence-card blockquote{border-left:3px solid #cfd8e8;color:#3d4757;font-size:.92rem;line-height:1.5;margin:8px 0;padding:2px 0 2px 12px}.src-head{align-items:baseline;display:flex;flex-wrap:wrap;gap:6px}.src-num{background:#3157c6;border-radius:50%;color:#fff;font-size:.72rem;font-weight:800;height:18px;line-height:18px;text-align:center;width:18px}#answer{font-size:1.14rem;line-height:1.6;margin:6px 0 0}a{color:#3157c6}footer{font-size:.85rem;margin-top:22px;text-align:center}</style></head><body><main><div class="eyebrow">Grounded answers from SEC filings</div><h1>Footnote</h1><p class="intro">Plain-English due diligence with evidence from company filings.</p><section class="card"><label for="ticker">Company</label><div class="company-row"><select id="company-picker"></select><input id="ticker" placeholder="or add a ticker, e.g. AAPL" maxlength="10" autocomplete="off"><button id="load" type="button">Add</button></div><div class="hint" id="company-hint"></div><div class="progress hidden" id="progress"><div class="bar"><div class="fill" id="progress-fill"></div></div><div class="hint" id="progress-text"></div></div></section><section class="card"><form id="question-form"><label for="question">Your question</label><textarea id="question" placeholder="Ask about the selected company&#39;s filings, e.g. how much cash does it have? (Enter to send)" required></textarea><div class="starters"><button class="starter" type="button" data-question="How much cash does the company have on hand?">How much cash does it have?</button><button class="starter" type="button" data-question="What could go wrong with the business?">What are the risks?</button><button class="starter" type="button" data-question="What is the CEO annual salary?">What is the CEO paid?</button><button class="starter" type="button" data-question="Were there any related party transactions?">Any related-party deals?</button><button class="starter" type="button" data-question="What is the price of Bitcoin?">Ask something not disclosed</button></div><div class="actions"><span class="hint" id="corpus-label"></span><button id="submit" type="submit">Ask question</button></div></form></section><div class="error hidden" id="error" role="alert"></div><section class="card hidden" id="result"><span id="status" class="status"></span><h2>Answer</h2><p id="answer"></p><div class="insight"><strong>Why it matters</strong><div id="why"></div></div><div class="evidence" id="evidence-wrap"><h2 id="evidence-heading">Evidence from the filing</h2><div id="evidence"></div></div></section><footer>Verify answers against the cited filing before making an investment decision.</footer></main><script>
 const question=document.querySelector('#question'),submit=document.querySelector('#submit'),result=document.querySelector('#result');
 const picker=document.querySelector('#company-picker'),tickerBox=document.querySelector('#ticker'),loadBtn=document.querySelector('#load');
 const progress=document.querySelector('#progress'),fill=document.querySelector('#progress-fill'),progressText=document.querySelector('#progress-text');
@@ -160,25 +169,37 @@ async function pollLoad(){
   fill.style.width=(s.percent||0)+'%';progressText.textContent=s.message||'';
   if(!s.done){setTimeout(pollLoad,700);return}
   loadBtn.disabled=false;loadBtn.textContent='Add';
-  if(s.error){progress.classList.add('hidden');window.alert(s.error);return}
+  if(s.error){progress.classList.add('hidden');showError(s.error);return}
   progressText.textContent=s.message;await refreshCompanies(s.ticker);
   document.querySelector('#corpus-label').textContent=currentTicker()+' - '+mode;
   setTimeout(()=>progress.classList.add('hidden'),1500);
 }
 loadBtn.onclick=async()=>{
-  const t=tickerBox.value.trim().toUpperCase();if(!t)return;
+  const t=tickerBox.value.trim().toUpperCase();if(!t)return;clearError();
   loadBtn.disabled=true;loadBtn.textContent='Loading...';
   progress.classList.remove('hidden');fill.style.width='0%';progressText.textContent='Starting';
   try{const r=await fetch('/api/company',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:t})});
     const d=await r.json();if(!r.ok)throw Error(d.error||'Could not load that company.');
     tickerBox.value='';pollLoad();
-  }catch(err){loadBtn.disabled=false;loadBtn.textContent='Add';progress.classList.add('hidden');window.alert(err.message)}
+  }catch(err){loadBtn.disabled=false;loadBtn.textContent='Add';progress.classList.add('hidden');showError(err.message)}
 };
 tickerBox.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();loadBtn.click()}};
 refreshCompanies();
-document.querySelectorAll('.starter').forEach(b=>b.onclick=()=>{question.value=b.dataset.question;question.focus()});
-document.querySelector('#question-form').onsubmit=async e=>{e.preventDefault();submit.disabled=true;submit.textContent='Searching...';try{const r=await fetch('/api/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:question.value,ticker:currentTicker()})}),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to answer.');const tag=document.querySelector('#status');tag.textContent=d.supported?'Supported by filing text':'Not found in loaded filings';tag.className='status '+(d.supported?'supported':'unsupported');document.querySelector('#answer').textContent=d.answer;
-    setStatus(d.generated?('last answer written by '+mode.replace('generation enabled (','').replace(')','')):(d.generation_error?('last answer excerpted - '+d.generation_error):'last answer excerpted from filings'),!d.generated&&!!d.generation_error);document.querySelector('#why').textContent=d.why_it_matters;const evidence=document.querySelector('#evidence');evidence.replaceChildren();document.querySelector('#evidence-heading').textContent=d.generated?'Quotes from the filing':'Evidence from the filing';d.evidence.forEach(item=>{const card=document.createElement('article');card.className='evidence-card';const title=document.createElement('strong');title.textContent=item.section;const meta=document.createElement('div');meta.className='metadata';meta.textContent=item.form+' | filed '+item.filing_date;const excerpt=document.createElement('p');excerpt.textContent='"'+item.excerpt+'"';const badge=document.createElement('span');badge.className='status '+(d.generated?'supported':'excerpt');badge.textContent=d.generated?'Verified quote':'Filing excerpt';badge.title=d.generated?'Checked to appear word for word in the filing section above.':'A passage from the cited section, shown as-is.';const link=document.createElement('a');link.href=item.source_url;link.target='_blank';link.rel='noreferrer';link.textContent='Open source filing';card.append(title,meta,excerpt,badge,document.createElement('br'),link);evidence.append(card)});document.querySelector('#evidence-wrap').classList.toggle('hidden',!d.evidence.length);result.classList.remove('hidden')}catch(err){window.alert(err.message)}finally{submit.disabled=false;submit.textContent='Ask question'}};
+question.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.querySelector('#question-form').requestSubmit()}};
+document.querySelectorAll('.starter').forEach(b=>b.onclick=()=>{question.value=b.dataset.question;question.focus();document.querySelector('#question-form').requestSubmit()});
+function showError(msg){const el=document.querySelector('#error');el.textContent=msg;el.classList.remove('hidden');el.scrollIntoView({block:'nearest'})}
+function clearError(){document.querySelector('#error').classList.add('hidden')}
+function setBusy(on,label){submit.disabled=on;question.disabled=on;picker.disabled=on;tickerBox.disabled=on;loadBtn.disabled=on;document.querySelectorAll('.starter').forEach(b=>b.disabled=on);submit.textContent=on?(label||'Searching...'):'Ask question'}
+document.querySelector('#question-form').onsubmit=async e=>{e.preventDefault();if(submit.disabled)return;clearError();const t=setTimeout(()=>setBusy(true,'Reading filings...'),1200);setBusy(true);try{const r=await fetch('/api/answer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:question.value,ticker:currentTicker()})}),d=await r.json();if(!r.ok)throw Error(d.error||'Unable to answer.');const tag=document.querySelector('#status');tag.textContent=d.supported?'Supported by filing text':'Not found in loaded filings';tag.className='status '+(d.supported?'supported':'unsupported');document.querySelector('#answer').textContent=d.answer;
+    setStatus(d.generated?('last answer written by '+mode.replace('generation enabled (','').replace(')','')):(d.generation_error?('last answer excerpted - '+d.generation_error):'last answer excerpted from filings'),!d.generated&&!!d.generation_error);document.querySelector('#why').textContent=d.why_it_matters;const evidence=document.querySelector('#evidence');evidence.replaceChildren();document.querySelector('#evidence-heading').textContent=d.generated?'Quotes from the filing':'Evidence from the filing';d.evidence.forEach((item,i)=>{const card=document.createElement('article');card.className='evidence-card';
+const head=document.createElement('div');head.className='src-head';
+const num=document.createElement('span');num.className='src-num';num.textContent=i+1;
+const link=document.createElement('a');link.href=item.source_url;link.target='_blank';link.rel='noreferrer';link.textContent=item.section;
+const meta=document.createElement('span');meta.className='metadata';meta.textContent=' · '+item.form+' filed '+item.filing_date;
+head.append(num,link,meta);
+const excerpt=document.createElement('blockquote');excerpt.textContent=item.excerpt;
+const badge=document.createElement('span');badge.className='status '+(d.generated?'supported':'excerpt');badge.textContent=d.generated?'Verified quote':'Filing excerpt';badge.title=d.generated?'Checked to appear word for word in the cited section.':'A passage from the cited section, shown as-is.';
+card.append(head,excerpt,badge);evidence.append(card)});document.querySelector('#evidence-wrap').classList.toggle('hidden',!d.evidence.length);result.classList.remove('hidden')}catch(err){showError(err.message)}finally{clearTimeout(t);setBusy(false)}};
 </script></body></html>"""
 
 
@@ -267,12 +288,15 @@ class AppHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format: str, *args: object) -> None:
-        pass
+        """Log requests, minus the load-status poll that fires twice a second."""
+        if "/api/company/status" in getattr(self, "requestline", ""):
+            return
+        super().log_message(format, *args)
 
 
 if __name__ == "__main__":
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)
-    print(f"SEC Simplifier is running at http://{HOST}:{PORT}")
+    print(f"Footnote is running at http://{HOST}:{PORT}")
     print("Press Ctrl+C to stop the server.")
     try:
         server.serve_forever()

@@ -1,1 +1,1 @@
-"""SEC Simplifier package."""
+"""Footnote package."""

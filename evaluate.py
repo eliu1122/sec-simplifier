@@ -32,7 +32,11 @@ except (AttributeError, ValueError):  # pragma: no cover - non-standard streams
 
 GOLDEN_SET_PATH = Path(__file__).parent / "tests" / "golden_set.json"
 BASELINE_PATH = Path(__file__).parent / "tests" / "eval_baseline.json"
-VECTOR_CANDIDATES = 10
+# Candidates pulled before fusion. Wide enough that a chunk missing from
+# this list really is far away: the lexical veto treats an absent chunk as
+# distance 1.0, so a short window vetoed good lexical matches for being
+# outside the window rather than for being unrelated.
+VECTOR_CANDIDATES = 60
 WIDTH = 74
 
 
@@ -157,7 +161,7 @@ def summarize(rows: list[dict]) -> dict:
 def report(rows: list[dict], stats: dict, baseline: dict | None, mode: str) -> None:
     print()
     print("=" * WIDTH)
-    print("  SEC Simplifier - golden set evaluation")
+    print("  Footnote - golden set evaluation")
     print(f"  Mode: {mode}")
     print("=" * WIDTH)
 

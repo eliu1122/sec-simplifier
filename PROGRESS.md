@@ -1,4 +1,4 @@
-# SEC Simplifier — Build Progress
+# Footnote — Build Progress
 
 Status as of **2026-09-07**. All six roadmap weeks are built, and the app has
 since been opened up from one hard-coded ticker to any US company searched on

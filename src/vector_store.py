@@ -172,6 +172,24 @@ def load_all_chunks(
     return chunks
 
 
+def delete_company(ticker: str, persist_dir: Path | str = DEFAULT_PERSIST_DIR) -> int:
+    """Remove every chunk belonging to one company. Returns the rows deleted.
+
+    Ingestion can leave a company indexed but unusable - a ticker that resolves
+    in EDGAR but files none of the four forms writes metadata and no chunks. The
+    picker reads from this store, so removing the rows is what makes a broken
+    company disappear from the app.
+    """
+    collection = get_collection(persist_dir)
+    where = _ticker_filter(ticker)
+    if where is None:
+        return 0
+    existing = collection.get(where=where)["ids"]
+    if existing:
+        collection.delete(ids=existing)
+    return len(existing)
+
+
 def indexed_companies(persist_dir: Path | str = DEFAULT_PERSIST_DIR) -> dict[str, dict[str, Any]]:
     """What is already indexed, keyed by ticker.
 

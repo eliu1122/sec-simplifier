@@ -230,20 +230,57 @@ def build_chunks_from_html(
     return chunks
 
 
+# Interrogatives and pronouns are the question's scaffolding, not its subject.
+# They matter because coverage divides by the number of terms: "How much cash
+# does the company have on hand?" scored 'cash' against five terms, four of
+# which no filing ever contains, so a balance sheet reached 0.25 coverage and
+# was gated out. Stripping them leaves 'cash', which the same table matches
+# outright. "hand" is here for the same reason - "on hand" is idiom, not a
+# disclosure term.
 STOP_WORDS = {
-    "about", "after", "amount", "and", "are", "company", "does", "exact", "filings",
-    "from", "have", "into", "is", "its", "of", "or", "please", "show", "tell", "that",
-    "the", "their", "there", "this", "what", "when", "where", "which", "with", "would",
+    "about", "after", "amount", "and", "any", "are", "can", "company", "does",
+    "exact", "filings", "from", "hand", "have", "how", "into", "is", "its",
+    "many", "much", "of", "or", "our", "please", "show", "tell", "that", "the",
+    "their", "them", "there", "they", "this", "was", "were", "what", "when",
+    "where", "which", "who", "why", "will", "with", "would", "your",
 }
 
 
-def _keywords(text: str) -> set[str]:
-    """Return meaningful normalized terms for transparent lexical retrieval."""
+# People ask in everyday words; filings answer in accounting terms. Mapping the
+# question onto the filing's vocabulary has to REPLACE the term rather than add
+# to it: coverage is a fraction of the question's terms, so adding 'cash'
+# alongside 'money' would demand a chunk contain both and raise the bar it was
+# meant to lower. Only applied to questions - chunk text keeps its own words.
+QUERY_SYNONYMS = {
+    "money": "cash",
+    "funds": "cash",
+    "fund": "cash",
+    "earn": "revenue",
+    "earning": "revenue",
+    "sale": "revenue",
+    "salary": "compensation",
+    "pay": "compensation",
+    "paid": "compensation",
+    "boss": "officer",
+    "staff": "employee",
+    "worker": "employee",
+    "lawsuit": "litigation",
+    "sued": "litigation",
+}
+
+
+def _keywords(text: str, expand: bool = False) -> set[str]:
+    """Return meaningful normalized terms for transparent lexical retrieval.
+
+    `expand` maps everyday words onto filing vocabulary and is set for questions
+    only, so that "how much money do they have?" reaches a balance sheet that
+    says "cash and cash equivalents" and never says "money".
+    """
     terms: set[str] = set()
     for raw_term in re.findall(r"[a-zA-Z0-9]+", text.lower()):
         term = raw_term[:-1] if raw_term.endswith("s") and not raw_term.endswith("ss") else raw_term
         if len(term) > 2 and raw_term not in STOP_WORDS and term not in STOP_WORDS:
-            terms.add(term)
+            terms.add(QUERY_SYNONYMS.get(term, term) if expand else term)
     return terms
 
 
@@ -262,6 +299,7 @@ MIN_LEXICAL_COVERAGE = 0.6
 # answer every question and destroy the abstention contract. Measured against
 # the golden set: on-topic questions land at 0.45-0.60, off-topic at 0.65+.
 MAX_VECTOR_DISTANCE = 0.60
+
 
 # A chunk the lexical scorer likes but that vector search never surfaced is
 # usually a vocabulary coincidence rather than evidence. "What is the weather
@@ -361,7 +399,7 @@ def score_chunks_lexically(
     Returns (gate, coverage, chunk) triples ordered by BM25. No threshold is
     applied here; callers decide what counts as good enough.
     """
-    query_terms = _keywords(question)
+    query_terms = _keywords(question, expand=True)
     if not query_terms or not corpus:
         return []
 
@@ -406,9 +444,18 @@ def score_chunks_lexically(
     return [(gate, coverage, chunk) for _, gate, coverage, chunk in ranked]
 
 
-def _passes_lexical_gate(gate: int, coverage: float) -> bool:
-    """Enough of the question is accounted for to call this evidence."""
-    return gate >= MIN_LEXICAL_SCORE and coverage >= MIN_LEXICAL_COVERAGE
+def _passes_lexical_gate(gate: int, coverage: float, query_terms: int = 0) -> bool:
+    """Enough of the question is accounted for to call this evidence.
+
+    The two-term floor stops a bare ticker match from counting as evidence, but
+    it must never exceed what the question can supply: "How much cash does the
+    company have on hand?" reduces to the single term 'cash', and a floor of two
+    made every balance sheet unreachable no matter how well it matched. When a
+    question has only one meaningful term, matching it is full coverage, and
+    coverage is what carries the "explains most of the question" guarantee.
+    """
+    floor = min(MIN_LEXICAL_SCORE, query_terms) if query_terms else MIN_LEXICAL_SCORE
+    return gate >= floor and coverage >= MIN_LEXICAL_COVERAGE
 
 
 def retrieve_supporting_chunks(question: str, corpus: list[dict[str, Any]], limit: int = 3) -> list[dict[str, Any]]:
@@ -419,8 +466,11 @@ def retrieve_supporting_chunks(question: str, corpus: list[dict[str, Any]], limi
     and form/item references are signals embeddings tend to blur.
     """
     scored = score_chunks_lexically(question, corpus)
+    terms = len(_keywords(question, expand=True))
     return [
-        chunk for gate, coverage, chunk in scored[:limit] if _passes_lexical_gate(gate, coverage)
+        chunk
+        for gate, coverage, chunk in scored[:limit]
+        if _passes_lexical_gate(gate, coverage, terms)
     ]
 
 
@@ -462,7 +512,7 @@ def retrieve_hybrid(
     With no vector hits this degrades to the lexical baseline, which keeps the
     abstention contract identical when the vector store is unavailable.
     """
-    query_terms = _keywords(question)
+    query_terms = _keywords(question, expand=True)
     distance_by_key = {
         _chunk_key(hit): float(hit.get("distance", 1.0)) for hit in vector_hits
     }
@@ -474,7 +524,7 @@ def retrieve_hybrid(
 
     lexical: list[dict[str, Any]] = []
     for gate, coverage, chunk in score_chunks_lexically(question, corpus):
-        if not _passes_lexical_gate(gate, coverage):
+        if not _passes_lexical_gate(gate, coverage, len(query_terms)):
             continue
         if not veto_available:
             lexical.append(chunk)
@@ -695,7 +745,15 @@ def answer_question(
             generation_error = str(unavailable)
 
     best = supporting[0]
-    answer = f"Based on {best['section']} and related filing text, the company states: {best['text'][:300]}"
+    # Without a generator there is nothing to write a direct answer with, so the
+    # honest framing is that this is a passage to read rather than an answer.
+    # The old wording ("Based on ... the company states:") presented 300
+    # characters of whichever chunk ranked first as though it answered the
+    # question, which it did 40% of the time.
+    answer = (
+        f"No written answer - showing the closest passage from {best['section']}. "
+        f"{best['text'][:300]}"
+    )
     citations = [
         f"{chunk['section']} | {chunk['form']} | {chunk['filing_date']} | {chunk['source_url']}"
         for chunk in supporting[:3]

@@ -1,4 +1,4 @@
-# SEC Simplifier — Grounded Due Diligence on SEC Filings
+# Footnote — Grounded Due Diligence on SEC Filings
 
 Search any US public company, ask questions in plain English, and get answers
 built only from that company's EDGAR filings — with visible citations and an
